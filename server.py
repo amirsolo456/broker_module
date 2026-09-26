@@ -358,8 +358,8 @@ def categorize_and_parse(data):
     if score >= 90 and has_hard_gates:
         status = "completed"
         reply_text = ""
-    elif score >= 80:
-        # ارسال/تولید درجا ریپلای خودکار کانال برای امتیاز بالای ۸۰ تا ۹۰
+    else:
+        # برای تمام پیام‌های با امتیاز زیر ۱۰۰ (دارای نقص پارامتر)، ریپلای اختصاصی درجا تولید و صادر می‌شود
         status = "pending"
         auto_reply_sent = True
         if missing_count == 1:
@@ -369,9 +369,6 @@ def categorize_and_parse(data):
         else:
             reply_text = f"سفارش شما دریافت شد ✅\nجهت ثبت فاکتور لطفاً موارد زیر را ارسال فرمایید:\n" + "\n".join([f"▫️ {m}" for m in missing_list]) + "\nبا تشکر 🌹"
         print(f"🤖 [Auto-Reply Channel Trigger] Instant reply generated for Message #{msg_id} (Score: {score}):\n{reply_text}")
-    else:
-        status = "pending"
-        reply_text = ""
 
     return {
         "msg_id": msg_id,
