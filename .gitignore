@@ -46,3 +46,9 @@ app.*.symbols
 
 # Obfuscation related
 app.*.map.json
+
+# Local/private runtime data
+receipts.db
+takhfif_module_export.json
+rubika_user_session/
+.env
