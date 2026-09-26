@@ -1,10 +1,14 @@
 import 'dart:convert';
 import 'dart:async';
-import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
+
+import 'core/constants/app_constants.dart';
+import 'core/utils/date_formatter.dart';
+import 'presentation/widgets/summary_header_widget.dart';
+import 'presentation/widgets/filter_search_card.dart';
+import 'presentation/widgets/rubika_chat_bubble.dart';
 
 void main() {
   runApp(const RubikaDiscountApp());
@@ -41,10 +45,7 @@ class ReceiptsHomePage extends StatefulWidget {
   State<ReceiptsHomePage> createState() => _ReceiptsHomePageState();
 }
 
-class _ReceiptsHomePageState extends State<ReceiptsHomePage> with SingleTickerProviderStateMixin {
-  // آدرس پایه هماهنگ با شبیه‌ساز اندروید (10.0.2.2) و سیستم خانگی (localhost)
-  static String get defaultBaseHost => Platform.isAndroid ? "http://10.0.2.2:5050" : "http://localhost:5050";
-
+class _ReceiptsHomePageState extends State<ReceiptsHomePage> {
   late String baseServerUrl;
 
   String get serverUrl => "$baseServerUrl/api/receipts";
@@ -59,20 +60,70 @@ class _ReceiptsHomePageState extends State<ReceiptsHomePage> with SingleTickerPr
   Map<String, dynamic>? smmBalanceData;
 
   bool isLoading = false;
+  bool isLoadingMore = false;
+  bool hasMoreOlder = true;
   String errorMessage = "";
   String searchQuery = "";
-  int selectedCategoryIndex = 0;
+  bool onlyCompletedFilter = false;
+  int _selectedIndex = 0;
 
-  late TabController _tabController;
+  late final ScrollController _scrollController;
   Timer? autoRefreshTimer;
 
   @override
   void initState() {
     super.initState();
-    baseServerUrl = defaultBaseHost;
-    _tabController = TabController(length: 3, vsync: this);
+    baseServerUrl = AppConstants.defaultBaseHost;
+    _scrollController = ScrollController();
+    _scrollController.addListener(_onScroll);
     _loadSavedServerUrl();
     autoRefreshTimer = Timer.periodic(const Duration(seconds: 5), (_) => fetchAllData(isSilent: true));
+  }
+
+  void _onScroll() {
+    if (_scrollController.position.pixels <= 100 && !isLoadingMore && hasMoreOlder && receipts.isNotEmpty) {
+      fetchOlderReceipts();
+    }
+  }
+
+  Future<void> fetchOlderReceipts() async {
+    if (isLoadingMore || receipts.isEmpty) return;
+    setState(() {
+      isLoadingMore = true;
+    });
+
+    try {
+      final minId = receipts.map((r) => r['id'] as int? ?? 0).reduce((a, b) => a < b ? a : b);
+      final url = Uri.parse('$serverUrl?limit=20&before_id=$minId');
+      final response = await http.get(url).timeout(const Duration(seconds: 5));
+
+      if (response.statusCode == 200) {
+        final body = json.decode(utf8.decode(response.bodyBytes));
+        if (body['success'] == true && body['data'] is List) {
+          final List olderData = body['data'];
+          if (olderData.isEmpty) {
+            setState(() {
+              hasMoreOlder = false;
+              isLoadingMore = false;
+            });
+          } else {
+            setState(() {
+              final existingIds = receipts.map((r) => r['id']).toSet();
+              for (var item in olderData) {
+                if (!existingIds.contains(item['id'])) {
+                  receipts.add(item);
+                }
+              }
+              isLoadingMore = false;
+            });
+          }
+        }
+      }
+    } catch (_) {
+      setState(() {
+        isLoadingMore = false;
+      });
+    }
   }
 
   Future<void> _loadSavedServerUrl() async {
@@ -97,7 +148,8 @@ class _ReceiptsHomePageState extends State<ReceiptsHomePage> with SingleTickerPr
 
   @override
   void dispose() {
-    _tabController.dispose();
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
     autoRefreshTimer?.cancel();
     super.dispose();
   }
@@ -110,7 +162,7 @@ class _ReceiptsHomePageState extends State<ReceiptsHomePage> with SingleTickerPr
   }
 
   Future<void> fetchReceipts({bool isSilent = false}) async {
-    if (!isSilent) {
+    if (!isSilent && receipts.isEmpty) {
       setState(() {
         isLoading = true;
         errorMessage = "";
@@ -122,15 +174,34 @@ class _ReceiptsHomePageState extends State<ReceiptsHomePage> with SingleTickerPr
 
       if (response.statusCode == 200) {
         final body = json.decode(utf8.decode(response.bodyBytes));
-        if (body['success'] == true) {
+        if (body['success'] == true && body['data'] is List) {
+          final List newData = body['data'];
           setState(() {
-            receipts = body['data'] ?? [];
+            if (receipts.isEmpty || !isSilent) {
+              final existingMap = {for (var r in receipts) r['id']: r};
+              for (var item in newData) {
+                existingMap[item['id']] = item;
+              }
+              receipts = existingMap.values.toList();
+            } else {
+              final existingIds = receipts.map((r) => r['id']).toSet();
+              for (var item in newData) {
+                if (!existingIds.contains(item['id'])) {
+                  receipts.insert(0, item);
+                } else {
+                  final idx = receipts.indexWhere((r) => r['id'] == item['id']);
+                  if (idx != -1) {
+                    receipts[idx] = item;
+                  }
+                }
+              }
+            }
             isLoading = false;
             errorMessage = "";
           });
         }
       } else {
-        if (!isSilent) {
+        if (!isSilent && receipts.isEmpty) {
           setState(() {
             errorMessage = "خطا در دریافت اطلاعات صورتحساب‌ها (${response.statusCode})";
             isLoading = false;
@@ -138,7 +209,7 @@ class _ReceiptsHomePageState extends State<ReceiptsHomePage> with SingleTickerPr
         }
       }
     } catch (e) {
-      if (!isSilent) {
+      if (!isSilent && receipts.isEmpty) {
         setState(() {
           errorMessage = "امکان اتصال به سرور ($baseServerUrl) نیست.\nلطفاً بررسی کنید server.py روی ویندوز در حال اجرا باشد.\n\nخطا: $e";
           isLoading = false;
@@ -266,9 +337,6 @@ class _ReceiptsHomePageState extends State<ReceiptsHomePage> with SingleTickerPr
 
   List<dynamic> get filteredReceipts {
     return receipts.where((item) {
-      if (selectedCategoryIndex == 1 && item['category'] != 'bank_receipt') return false;
-      if (selectedCategoryIndex == 2 && item['category'] != 'customer_order') return false;
-
       if (searchQuery.isNotEmpty) {
         final q = searchQuery.toLowerCase();
         final raw = (item['raw_text'] ?? '').toString().toLowerCase();
@@ -314,28 +382,11 @@ class _ReceiptsHomePageState extends State<ReceiptsHomePage> with SingleTickerPr
     return Scaffold(
       backgroundColor: const Color(0xFFF4F5F9),
       appBar: AppBar(
-        title: const Text(
-          'مدیریت صورتحساب و پنل خدمات روبیکا',
-          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
+        title: Text(
+          _selectedIndex == 0 ? 'داشبورد و پایش صورتحساب‌ها' : 'پاسخگوی هوشمند روبیکا',
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
         ),
         centerTitle: true,
-        bottom: TabBar(
-          controller: _tabController,
-          tabs: [
-            Tab(
-              icon: const Icon(Icons.receipt_long),
-              text: 'صورتحساب‌ها (${receipts.length})',
-            ),
-            Tab(
-              icon: const Icon(Icons.smart_toy),
-              text: 'پاسخگوی هوشمند (${autoRules.length})',
-            ),
-            const Tab(
-              icon: Icon(Icons.shopping_cart),
-              text: 'خدمات rubika1.ir',
-            ),
-          ],
-        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -349,33 +400,40 @@ class _ReceiptsHomePageState extends State<ReceiptsHomePage> with SingleTickerPr
           ),
         ],
       ),
-      body: TabBarView(
-        controller: _tabController,
+      body: IndexedStack(
+        index: _selectedIndex,
         children: [
-          _buildReceiptsTab(theme),
+          _buildCompletedOrdersTab(theme),
           _buildAutoRulesTab(theme),
-          _buildSmmTab(theme),
         ],
       ),
-      floatingActionButton: AnimatedBuilder(
-        animation: _tabController,
-        builder: (context, child) {
-          if (_tabController.index == 1) {
-            return FloatingActionButton.extended(
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _selectedIndex,
+        onTap: (index) => setState(() => _selectedIndex = index),
+        selectedItemColor: const Color(0xFF673AB7),
+        unselectedItemColor: Colors.grey.shade600,
+        selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'IRANSans'),
+        unselectedLabelStyle: const TextStyle(fontFamily: 'IRANSans'),
+        items: [
+          BottomNavigationBarItem(
+            icon: const Icon(Icons.dashboard_outlined),
+            activeIcon: const Icon(Icons.dashboard),
+            label: 'داشبورد (${receipts.length})',
+          ),
+          BottomNavigationBarItem(
+            icon: const Icon(Icons.smart_toy_outlined),
+            activeIcon: const Icon(Icons.smart_toy),
+            label: 'پاسخگوی هوشمند (${autoRules.length})',
+          ),
+        ],
+      ),
+      floatingActionButton: _selectedIndex == 1
+          ? FloatingActionButton.extended(
               onPressed: showAddRuleDialog,
               icon: const Icon(Icons.add),
               label: const Text('کلمه کلیدی جدید'),
-            );
-          } else if (_tabController.index == 2) {
-            return FloatingActionButton.extended(
-              onPressed: showSmmOrderDialog,
-              icon: const Icon(Icons.add_shopping_cart),
-              label: const Text('ثبت سفارش خدمات'),
-            );
-          }
-          return const SizedBox.shrink();
-        },
-      ),
+            )
+          : null,
     );
   }
 
@@ -389,17 +447,38 @@ class _ReceiptsHomePageState extends State<ReceiptsHomePage> with SingleTickerPr
     return list;
   }
 
+  String toPersianDigits(String input) {
+    const english = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+    const persian = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+    for (int i = 0; i < english.length; i++) {
+      input = input.replaceAll(english[i], persian[i]);
+    }
+    return input;
+  }
+
   String extractDateHeader(Map<String, dynamic> item) {
     final d = (item['date_str'] ?? item['date'] ?? item['created_at'] ?? '').toString();
     if (d.contains('1405/07/02') || d.contains('1405-07-02')) return 'پنجشنبه، ۲ مهر ۱۴۰۵';
     if (d.contains('1405/07/03') || d.contains('1405-07-03')) return 'جمعه، ۳ مهر ۱۴۰۵';
     if (d.contains('1405/07/04') || d.contains('1405-07-04')) return 'شنبه، ۴ مهر ۱۴۰۵';
+    if (d.contains('1405/07/05') || d.contains('1405-07-05')) return 'یکشنبه، ۵ مهر ۱۴۰۵';
 
-    final match = RegExp(r'(140\d[/\-]\d{1,2}[/\-]\d{1,2})').firstMatch(d);
+    final match = RegExp(r'(140\d)[/\-](\d{1,2})[/\-](\d{1,2})').firstMatch(d);
     if (match != null) {
-      return 'تاریخ: ${match.group(1)}';
+      final y = match.group(1)!;
+      final m = int.parse(match.group(2)!);
+      final day = int.parse(match.group(3)!);
+      const months = ['فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور', 'مهر', 'آبان', 'آذر', 'دی', 'بهمن', 'اسفند'];
+      const weekDays = ['شنبه', 'یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنجشنبه', 'جمعه'];
+      final monthName = (m >= 1 && m <= 12) ? months[m - 1] : '$m';
+      String weekDayName = '';
+      if (y == '1405' && m == 7) {
+        final idx = (day + 2) % 7;
+        weekDayName = '${weekDays[idx]}، ';
+      }
+      return toPersianDigits('$weekDayName$day $monthName $y');
     }
-    return 'پیام‌های ثبت‌شده';
+    return 'جمعه، ۳ مهر ۱۴۰۵';
   }
 
   String extractTimeBadge(Map<String, dynamic> item) {
@@ -411,52 +490,113 @@ class _ReceiptsHomePageState extends State<ReceiptsHomePage> with SingleTickerPr
     return '12:00';
   }
 
-  Widget _buildReceiptsTab(ThemeData theme) {
-    final list = chronologicalReceipts;
+  Widget _buildCompletedOrdersTab(ThemeData theme) {
+    final completedCount = receipts.where((r) => r['status'] == 'completed' || (r['score'] ?? 0) >= 90).length;
+    final list = chronologicalReceipts.where((item) {
+      if (onlyCompletedFilter) {
+        return item['status'] == 'completed' || (item['score'] ?? 0) >= 90;
+      }
+      return true;
+    }).toList();
 
     return Column(
       children: [
-        _buildSummaryHeader(theme),
-        _buildFilterAndSearchSection(),
+        SummaryHeaderWidget(
+          totalCount: receipts.length,
+          totalAmount: totalAmount,
+          totalDiscounts: totalDiscounts,
+        ),
+        FilterSearchCard(
+          searchQuery: searchQuery,
+          onSearchChanged: (val) => setState(() => searchQuery = val),
+          onlyCompletedFilter: onlyCompletedFilter,
+          onOnlyCompletedChanged: (val) => setState(() => onlyCompletedFilter = val ?? false),
+          totalCount: receipts.length,
+          completedCount: completedCount,
+        ),
+        const SizedBox(height: 8),
         Expanded(
           child: isLoading
               ? const Center(child: CircularProgressIndicator())
               : errorMessage.isNotEmpty
                   ? _buildErrorWidget()
                   : list.isEmpty
-                      ? _buildEmptyWidget()
-                      : RefreshIndicator(
-                          onRefresh: () => fetchReceipts(),
-                          child: Container(
-                            decoration: const BoxDecoration(
-                              color: Color(0xFFECEFF1), // پس‌زمینه گفتگو شبیه روبیکا
-                            ),
-                            child: ListView.builder(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
-                              itemCount: list.length,
-                              itemBuilder: (context, index) {
-                                final item = list[index];
-                                final currentDate = extractDateHeader(item);
-
-                                String? dateHeaderToShow;
-                                if (index == 0) {
-                                  dateHeaderToShow = currentDate;
-                                } else {
-                                  final prevDate = extractDateHeader(list[index - 1]);
-                                  if (prevDate != currentDate) {
-                                    dateHeaderToShow = currentDate;
-                                  }
-                                }
-
-                                return _buildRubikaChatBubble(item, dateHeaderToShow);
-                              },
+                      ? const Center(
+                          child: Padding(
+                            padding: EdgeInsets.all(24),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.inbox_outlined, size: 54, color: Colors.grey),
+                                SizedBox(height: 12),
+                                Text(
+                                  'هیچ پیامی با این فیلتر یافت نشد.\nمی‌توانید چک‌باکس سفارشات تکمیل‌شده را خاموش کنید.',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(color: Colors.grey, fontSize: 13),
+                                ),
+                              ],
                             ),
                           ),
+                        )
+                      : Column(
+                          children: [
+                            if (isLoadingMore)
+                              Container(
+                                color: Colors.purple.shade50,
+                                padding: const EdgeInsets.symmetric(vertical: 6),
+                                child: const Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+                                    SizedBox(width: 8),
+                                    Text('در حال بارگذاری پیام‌های قدیمی‌تر...', style: TextStyle(fontSize: 11, color: Colors.purple)),
+                                  ],
+                                ),
+                              ),
+                            Expanded(
+                              child: RefreshIndicator(
+                                onRefresh: () => fetchReceipts(),
+                                child: Container(
+                                  decoration: const BoxDecoration(
+                                    color: Color(0xFFECEFF1),
+                                  ),
+                                  child: ListView.builder(
+                                    controller: _scrollController,
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                                    itemCount: list.length,
+                                    itemBuilder: (context, index) {
+                                      final item = list[index];
+                                      final currentDate = DateFormatter.extractDateHeader(item);
+
+                                      String? dateHeaderToShow;
+                                      if (index == 0) {
+                                        dateHeaderToShow = currentDate;
+                                      } else {
+                                        final prevDate = DateFormatter.extractDateHeader(list[index - 1]);
+                                        if (prevDate != currentDate) {
+                                          dateHeaderToShow = currentDate;
+                                        }
+                                      }
+
+                                      return RubikaChatBubble(
+                                        item: item,
+                                        showDateHeader: dateHeaderToShow,
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
         ),
       ],
     );
   }
+
+
+
+
 
   Widget _buildAutoRulesTab(ThemeData theme) {
     return Padding(
@@ -536,484 +676,7 @@ class _ReceiptsHomePageState extends State<ReceiptsHomePage> with SingleTickerPr
     );
   }
 
-  Widget _buildSmmTab(ThemeData theme) {
-    final balance = smmBalanceData != null ? (smmBalanceData!['balance'] ?? '0') : 'در حال استعلام...';
-    final currency = smmBalanceData != null ? (smmBalanceData!['currency'] ?? 'تومان') : '';
 
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Card(
-            color: Colors.indigo.shade900,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            child: Padding(
-              padding: const EdgeInsets.all(18),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Row(
-                    children: [
-                      const CircleAvatar(
-                        backgroundColor: Colors.white24,
-                        child: Icon(Icons.account_balance_wallet, color: Colors.white),
-                      ),
-                      const SizedBox(width: 12),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('موجودی پنل rubika1.ir', style: TextStyle(color: Colors.white70, fontSize: 12)),
-                          const SizedBox(height: 4),
-                          Text(
-                            '$balance $currency',
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                  ElevatedButton.icon(
-                    onPressed: () {
-                      fetchSmmBalance();
-                      fetchSmmServices();
-                    },
-                    icon: const Icon(Icons.sync, size: 16),
-                    label: const Text('استعلام مجدد'),
-                  )
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text('خدمات قابل سفارش rubika1.ir:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-              TextButton(
-                onPressed: () => fetchSmmServices(),
-                child: const Text('بارگذاری لیست سرویس‌ها'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-
-          Expanded(
-            child: smmServices.isEmpty
-                ? Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.cloud_download_outlined, size: 48, color: Colors.grey),
-                        const SizedBox(height: 12),
-                        const Text('برای مشاهده سرویس‌ها، روی دکمه «بارگذاری لیست سرویس‌ها» کلیک کنید.'),
-                        const SizedBox(height: 12),
-                        ElevatedButton(
-                          onPressed: () => fetchSmmServices(),
-                          child: const Text('دریافت لیست سرویس‌ها'),
-                        ),
-                      ],
-                    ),
-                  )
-                : ListView.builder(
-                    itemCount: smmServices.length,
-                    itemBuilder: (context, index) {
-                      final s = smmServices[index];
-                      return Card(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        child: ListTile(
-                          title: Text(s['name'] ?? '', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                          subtitle: Text('کد سرویس: ${s['service']} | حداقل: ${s['min']} - حداکثر: ${s['max']} | نرخ: ${s['rate']} تومان'),
-                          trailing: ElevatedButton(
-                            onPressed: () => showSmmOrderDialogWithService(s['service'].toString()),
-                            child: const Text('سفارش'),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSummaryHeader(ThemeData theme) {
-    return Container(
-      margin: const EdgeInsets.all(16),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [theme.colorScheme.primary, theme.colorScheme.secondary],
-          begin: Alignment.topRight,
-          end: Alignment.bottomLeft,
-        ),
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: theme.colorScheme.primary.withAlpha(76),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          )
-        ],
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
-        children: [
-          _buildStatItem('تعداد صورتحساب', '${receipts.length} عدد', Icons.receipt_long),
-          Container(width: 1, height: 40, color: Colors.white30),
-          _buildStatItem('مجموع مبالغ', '${formatCurrency(totalAmount)} ریال', Icons.account_balance_wallet),
-          Container(width: 1, height: 40, color: Colors.white30),
-          _buildStatItem('تخفیف‌های محاسبه‌شده', '${formatCurrency(totalDiscounts)} ریال', Icons.discount),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildStatItem(String label, String value, IconData icon) {
-    return Column(
-      children: [
-        Icon(icon, color: Colors.white70, size: 22),
-        const SizedBox(height: 4),
-        Text(
-          label,
-          style: const TextStyle(color: Colors.white70, fontSize: 11),
-        ),
-        const SizedBox(height: 2),
-        Text(
-          value,
-          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildFilterAndSearchSection() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Column(
-        children: [
-          TextField(
-            onChanged: (val) => setState(() => searchQuery = val),
-            decoration: InputDecoration(
-              hintText: 'جستجو در شماره پیگیری، نام بانک، مشتری یا تلفن...',
-              prefixIcon: const Icon(Icons.search),
-              contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 16),
-              filled: true,
-              fillColor: Colors.white,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide.none,
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                _buildCategoryFilterChip(0, 'همه پیام‌ها (${receipts.length})'),
-                const SizedBox(width: 8),
-                _buildCategoryFilterChip(1, 'رسیدهای بانکی'),
-                const SizedBox(width: 8),
-                _buildCategoryFilterChip(2, 'سفارشات مشتریان'),
-              ],
-            ),
-          ),
-          const SizedBox(height: 10),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCategoryFilterChip(int index, String label) {
-    final isSelected = selectedCategoryIndex == index;
-    return FilterChip(
-      selected: isSelected,
-      label: Text(label),
-      selectedColor: Theme.of(context).colorScheme.primaryContainer,
-      onSelected: (bool selected) {
-        setState(() {
-          selectedCategoryIndex = index;
-        });
-      },
-    );
-  }
-
-  Widget _buildRubikaChatBubble(Map<String, dynamic> item, String? showDateHeader) {
-    final isBank = item['category'] == 'bank_receipt' || item['type'] == 'bank_receipt';
-    final rawText = (item['raw_text'] ?? '').toString();
-    final custName = (item['customer_name'] ?? item['sender'] ?? '').toString();
-    final bankName = (item['bank_name'] ?? 'بانک').toString();
-    final amount = item['amount'] ?? 0;
-    final discount = item['discount_amount'] ?? 0;
-    final tracking = (item['tracking_number'] ?? '').toString();
-    final phones = (item['phones'] ?? '').toString();
-    final address = (item['address'] ?? '').toString();
-    final orderItem = (item['order_item'] ?? '').toString();
-    final timeStr = extractTimeBadge(item);
-
-    return Column(
-      children: [
-        if (showDateHeader != null)
-          Container(
-            margin: const EdgeInsets.symmetric(vertical: 12),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-            decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.32),
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Text(
-              showDateHeader,
-              style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
-            ),
-          ),
-        Align(
-          alignment: Alignment.centerRight,
-          child: Container(
-            constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.88),
-            margin: const EdgeInsets.only(bottom: 10, right: 4, left: 4),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: isBank ? const Color(0xFFE8F5E9) : const Color(0xFFF3E5F5), // Green tint for Bank, Soft Purple for Order
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(16),
-                topRight: Radius.circular(16),
-                bottomLeft: Radius.circular(16),
-                bottomRight: Radius.circular(4),
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.06),
-                  blurRadius: 4,
-                  offset: const Offset(0, 2),
-                )
-              ],
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Header (Peer Name)
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Row(
-                      children: [
-                        CircleAvatar(
-                          radius: 13,
-                          backgroundColor: isBank ? Colors.green.shade700 : Colors.deepPurple,
-                          child: Icon(
-                            isBank ? Icons.account_balance : Icons.person,
-                            size: 14,
-                            color: Colors.white,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          isBank ? bankName : (custName.isNotEmpty ? custName : 'مجموعه اصلاح نژاد دام خاتون'),
-                          style: TextStyle(
-                            color: isBank ? Colors.green.shade900 : Colors.deepPurple.shade900,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 13,
-                          ),
-                        ),
-                      ],
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: isBank ? Colors.green.shade200 : Colors.purple.shade200,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        isBank ? 'رسید پرداخت' : 'سفارش ثبت‌شده',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                          color: isBank ? Colors.green.shade900 : Colors.purple.shade900,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-
-                // Raw Message Text
-                SelectableText(
-                  rawText.isNotEmpty ? rawText : 'متن پیام خالی است',
-                  style: const TextStyle(fontSize: 13, height: 1.45, color: Colors.black87),
-                ),
-                const SizedBox(height: 10),
-
-                // Structured summary badge
-                if (isBank) ...[
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.85),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: Colors.green.shade300),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (amount > 0)
-                          _buildBubbleField('مبلغ رسید:', '${formatCurrency(amount)} ریال', isBold: true),
-                        if (tracking.isNotEmpty)
-                          _buildBubbleField('شماره پیگیری:', tracking),
-                        if (discount > 0)
-                          _buildBubbleField('تخفیف ۵٪ محاسبه‌شده:', '${formatCurrency(discount)} ریال', highlight: true),
-                      ],
-                    ),
-                  ),
-                ] else ...[
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.85),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: Colors.purple.shade300),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (custName.isNotEmpty)
-                          _buildBubbleField('نام مشتری:', custName),
-                        if (phones.isNotEmpty)
-                          _buildBubbleField('شماره تماس:', phones),
-                        if (orderItem.isNotEmpty)
-                          _buildBubbleField('اقلام سفارش:', orderItem, isBold: true),
-                        if (address.isNotEmpty)
-                          _buildBubbleField('آدرس:', address),
-                      ],
-                    ),
-                  ),
-                ],
-
-                // Score & Status Section
-                const SizedBox(height: 8),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: (item['status'] == 'completed' || (item['score'] ?? 0) >= 97) ? Colors.green.shade100 : Colors.orange.shade100,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: (item['status'] == 'completed' || (item['score'] ?? 0) >= 97) ? Colors.green.shade400 : Colors.orange.shade400),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            (item['status'] == 'completed' || (item['score'] ?? 0) >= 97) ? Icons.check_circle : Icons.hourglass_top,
-                            size: 13,
-                            color: (item['status'] == 'completed' || (item['score'] ?? 0) >= 97) ? Colors.green.shade800 : Colors.orange.shade900,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            (item['status'] == 'completed' || (item['score'] ?? 0) >= 97) ? 'کامل (تایید خودکار)' : 'پندینگ (نمره: ${item['score'] ?? 0}٪)',
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                              color: (item['status'] == 'completed' || (item['score'] ?? 0) >= 97) ? Colors.green.shade900 : Colors.orange.shade900,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    if ((item['status'] != 'completed' && (item['score'] ?? 0) < 97) && (item['reply_text'] ?? '').toString().isNotEmpty)
-                      InkWell(
-                        onTap: () {
-                          Clipboard.setData(ClipboardData(text: item['reply_text'].toString()));
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('متن ریپلای روبیکا در حافظه کپی شد')),
-                          );
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(
-                            color: Colors.deepOrange.shade50,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: Colors.deepOrange.shade300),
-                          ),
-                          child: const Row(
-                            children: [
-                              Icon(Icons.reply, size: 12, color: Colors.deepOrange),
-                              SizedBox(width: 4),
-                              Text(
-                                'کپی ریپلای روبیکا',
-                                style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.deepOrange),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-                if ((item['status'] != 'completed' && (item['score'] ?? 0) < 97) && (item['missing_params'] ?? '').toString().isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    'پارامترهای غایب: ${item['missing_params']}',
-                    style: TextStyle(fontSize: 10, color: Colors.orange.shade900, fontWeight: FontWeight.bold),
-                  ),
-                ],
-
-                const SizedBox(height: 6),
-                // Time Badge & Read Checks
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    Text(
-                      timeStr,
-                      style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
-                    ),
-                    const SizedBox(width: 4),
-                    Icon(
-                      Icons.done_all,
-                      size: 14,
-                      color: isBank ? Colors.green.shade700 : Colors.deepPurple,
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildBubbleField(String label, String value, {bool isBold = false, bool highlight = false}) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 3),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '$label ',
-            style: TextStyle(
-              fontSize: 11,
-              color: highlight ? Colors.amber.shade900 : Colors.grey.shade700,
-              fontWeight: highlight ? FontWeight.bold : FontWeight.normal,
-            ),
-          ),
-          Expanded(
-            child: Text(
-              value,
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: isBold || highlight ? FontWeight.bold : FontWeight.normal,
-                color: highlight ? Colors.amber.shade900 : Colors.black87,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 
 
 
@@ -1042,22 +705,7 @@ class _ReceiptsHomePageState extends State<ReceiptsHomePage> with SingleTickerPr
     );
   }
 
-  Widget _buildEmptyWidget() {
-    return const Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.inbox, size: 54, color: Colors.grey),
-          SizedBox(height: 12),
-          Text(
-            'هنوز هیچ صورتحسابی دریافت نشده است.\nدر حال پایش روبیکا...',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey, fontSize: 13),
-          ),
-        ],
-      ),
-    );
-  }
+
 
 
 

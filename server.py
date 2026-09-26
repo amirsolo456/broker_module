@@ -208,9 +208,9 @@ def categorize_and_parse(data):
                         customer_name = l
                         break
 
-    # استخراج آدرس
+    # استخراج آدرس (بررسی تمام پیام‌ها اعم از تک‌منظوره یا ترکیبی)
     address = data.get("address", "")
-    if not address and category == "customer_order":
+    if not address:
         addr_lines = []
         for l in filtered_lines:
             if any(kw in l for kw in ["استان", "شهرستان", "شهر", "روستا", "خیابان", "خ ", "کوچه", "پلاک", "منزل", "فروشگاه", "بلوار", "میدان", "گرگان", "اردبیل", "آمل", "سوسنگرد", "عسلویه", "کرج", "گلوگاه", "ایلام", "ملایر", "نکا", "خرم آباد"]):
@@ -218,15 +218,19 @@ def categorize_and_parse(data):
         if addr_lines:
             address = " ".join(addr_lines)
 
-    # استخراج اقلام سفارش
+    # استخراج اقلام سفارش (بررسی تمام پیام‌ها اعم از تک‌منظوره یا ترکیبی)
     order_item = data.get("order_item", "")
-    if not order_item and category == "customer_order":
+    if not order_item:
         item_lines = []
         for l in filtered_lines:
-            if any(kw in l for kw in ["عدد", "دستگاه", "پشم چین", "آبخوری", "سرنگ", "پلاک گردنی"]):
+            if any(kw in l for kw in ["عدد", "دستگاه", "دست", "پشم چین", "آبخوری", "سرنگ", "پلاک گردنی"]):
                 item_lines.append(l)
         if item_lines:
             order_item = " + ".join(item_lines)
+
+    # اصلاح تایپوهای متداول کالاها
+    if order_item:
+        order_item = order_item.replace("طرح دید", "طرح جدید").replace("ماشبن", "ماشین")
 
     # استخراج تاریخ
     date_str = data.get("date")
@@ -241,37 +245,92 @@ def categorize_and_parse(data):
         calculated_discount = int(amount_num * 0.05)
 
     # -------------------------------------------------------------------
-    # نمره‌گذاری و تعیین وضعیت طبق قوانین broker_order_recognition_rules
+    # نمره‌گذاری دقیق و هارد‌گیت‌ها (امتیازدهی ریزتر)
     # -------------------------------------------------------------------
-    has_name = bool(customer_name and len(customer_name.strip()) >= 2)
-    has_address = bool(address and len(address.strip()) >= 5)
-    has_phone = bool(phones_str and len(phones_str.strip()) >= 10)
-    has_items = bool(order_item and len(order_item.strip()) >= 2)
-    has_payment = bool(tracking_number or (amount_num and amount_num > 0) or bank_name)
+    # ۱. نام — ۲۰ امتیاز
+    name_score = 0
+    if customer_name and len(customer_name.strip()) >= 2:
+        if len(customer_name.strip()) >= 5 and (" " in customer_name.strip() or len(customer_name.strip().split()) >= 2):
+            name_score = 20  # نام و نام خانوادگی کامل
+        else:
+            name_score = 15  # اسم ناقص ولی قابل تشخیص
+    else:
+        name_score = 0
 
-    score = 0
-    if has_name: score += 20
-    if has_address: score += 20
-    if has_phone: score += 20
-    if has_items: score += 30
-    if has_payment: score += 10
+    # ۲. شماره تماس — ۲۰ امتیاز
+    phone_score = 0
+    if phones_str:
+        if re.search(r'09[0-9]{9}', phones_str):
+            phone_score = 20  # موبایل معتبر ۱۱ رقمی
+        else:
+            phone_score = 10
+    else:
+        phone_score = 0
+
+    # ۳. آدرس — ۱۵ امتیاز
+    address_score = 0
+    if address and len(address.strip()) >= 3:
+        if any(kw in address for kw in ["خیابان", "خ ", "کوچه", "پلاک", "منزل", "روستا", "شهرک", "بلوار", "میدان"]):
+            address_score = 15  # استان/شهر + جزئیات
+        elif len(address.strip()) >= 5:
+            address_score = 10  # فقط شهر یا منطقه
+        else:
+            address_score = 5
+    else:
+        address_score = 0
+
+    # ۴. اقلام — ۳۰ امتیاز
+    items_score = 0
+    if order_item and len(order_item.strip()) >= 2:
+        if any(kw in order_item for kw in ["عدد", "دستگاه", "دست"]):
+            items_score = 30  # نام کالا دقیق + تعداد
+        else:
+            items_score = 15  # کالا پیدا شده بدون تعداد
+    else:
+        items_score = 0
+
+    # ۵. فیش — ۱۵ امتیاز
+    payment_score = 0
+    if "واریزی چک شد" in raw_text and not tracking_number and not (amount_num and amount_num > 0):
+        payment_score = 0  # صرفاً جمله «واریزی چک شد» مدرک واریز نیست
+    elif tracking_number or (amount_num and amount_num > 0) or bank_name:
+        payment_score = 15
+    else:
+        payment_score = 0
+
+    score = name_score + phone_score + address_score + items_score + payment_score
+
+    # بررسی گیت‌های اجباری
+    has_hard_gates = bool(name_score >= 15 and phone_score >= 15 and address_score >= 10 and items_score >= 15 and payment_score >= 15)
 
     missing_list = []
-    if not has_name: missing_list.append("نام و نام خانوادگی")
-    if not has_address: missing_list.append("آدرس کامل")
-    if not has_phone: missing_list.append("شماره تماس")
-    if not has_items: missing_list.append("اقلام و تعداد سفارش")
-    if not has_payment: missing_list.append("فیش/رسید واریز")
+    if name_score < 15: missing_list.append("نام و نام خانوادگی")
+    if phone_score < 15: missing_list.append("شماره تماس")
+    if address_score < 10: missing_list.append("آدرس دقیق")
+    if items_score < 15: missing_list.append("اقلام و تعداد سفارش")
+    if payment_score < 15: missing_list.append("تصویر یا شماره پیگیری فیش واریزی")
 
     missing_params = " ، ".join(missing_list) if missing_list else ""
+    missing_count = len(missing_list)
 
-    if score >= 97:
+    auto_reply_sent = False
+    if score >= 90 and has_hard_gates:
         status = "completed"
         reply_text = ""
+    elif score >= 80:
+        # ارسال/تولید درجا ریپلای خودکار کانال برای امتیاز بالای ۸۰ تا ۹۰
+        status = "pending"
+        auto_reply_sent = True
+        if missing_count == 1:
+            reply_text = f"سفارش شما دریافت شد ✅\nبرای ثبت فاکتور فقط {missing_list[0]} شما ارسال نشده است.\nلطفاً {missing_list[0]} را ارسال فرمایید. 🌹"
+        elif missing_count == 2:
+            reply_text = f"سفارش شما دریافت شد ✅\nبرای ثبت فاکتور، لطفاً موارد زیر را ارسال فرمایید:\n▫️ {missing_list[0]}\n▫️ {missing_list[1]}\nبا تشکر 🌹"
+        else:
+            reply_text = f"سفارش شما دریافت شد ✅\nجهت ثبت فاکتور لطفاً موارد زیر را ارسال فرمایید:\n" + "\n".join([f"▫️ {m}" for m in missing_list]) + "\nبا تشکر 🌹"
+        print(f"🤖 [Auto-Reply Channel Trigger] Instant reply generated for Message #{msg_id} (Score: {score}):\n{reply_text}")
     else:
         status = "pending"
-        reply_lines = [f"- {m}" for m in missing_list]
-        reply_text = "سفارش شما دریافت شد ✅\nبرای تکمیل ثبت فاکتور لطفاً ارسال کنید:\n" + "\n".join(reply_lines)
+        reply_text = ""
 
     return {
         "msg_id": msg_id,
@@ -406,11 +465,20 @@ def save_receipt(parsed_data):
     conn.close()
     return inserted_id
 
-def get_all_receipts():
+def get_all_receipts(limit=None, before_id=None):
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM receipts ORDER BY id DESC")
+    query = "SELECT * FROM receipts"
+    params = []
+    if before_id:
+        query += " WHERE id < ?"
+        params.append(before_id)
+    query += " ORDER BY id DESC"
+    if limit:
+        query += " LIMIT ?"
+        params.append(limit)
+    cursor.execute(query, params)
     rows = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return rows
@@ -462,7 +530,11 @@ class ReceiptHandler(http.server.BaseHTTPRequestHandler):
         try:
             parsed_url = urlparse(self.path)
             if parsed_url.path == '/api/receipts':
-                receipts = get_all_receipts()
+                query_params = parse_qs(parsed_url.query)
+                limit = int(query_params.get('limit', [0])[0]) if query_params.get('limit') else None
+                before_id = int(query_params.get('before_id', [0])[0]) if query_params.get('before_id') else None
+
+                receipts = get_all_receipts(limit=limit, before_id=before_id)
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self._set_cors_headers()
