@@ -104,15 +104,22 @@ def get_rubika1_order_status(order_id):
         "order": order_id
     })
 
+EXPORT_JSON_PATH = "takhfif_module_export.json"
+
 # -------------------------------------------------------------------
-# پارسر صورتحساب و پیام‌های روبیکا
+# پارسر صورتحساب و پیام‌های روبیکا طبق قوانین takhfif_module
 # -------------------------------------------------------------------
 def categorize_and_parse(data):
     raw_text = data.get("raw_text", "").strip()
-    msg_id = data.get("msg_id", "")
+    msg_id = str(data.get("msg_id", ""))
 
     trans = str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789')
     normalized_text = raw_text.translate(trans)
+
+    # استثناها طبق قوانین takhfif_module
+    ignored_phrases = ["از فاکتور", "کسر شود", "یک سفارش از بالامونده", "یک سفارش از بالا مونده", "واریزی چک شد", "وضعیت ارسال"]
+    if any(ign in raw_text for ign in ["یک سفارش از بالامونده", "یک سفارش از بالا مونده"]) and not re.search(r'(?:پیگیری|مبلغ|رسید|09[0-9]{9})', normalized_text):
+        return None
 
     is_bank = any(kw in raw_text for kw in ["رسید", "بانک", "مبلغ", "پیگیری", "حساب", "شبا", "پایا", "کارت به کارت", "سپینو", "بام", "انتقال یافت"])
     category = "bank_receipt" if is_bank else "customer_order"
@@ -120,14 +127,21 @@ def categorize_and_parse(data):
     # استخراج بانک
     bank_name = data.get("bank_name")
     if not bank_name:
-        for b in ["بانک کشاورزی", "کشاورزی", "سپینو", "بام", "بانک ملی", "ملی", "صادرات", "تجارت", "ملت", "سامان", "قرض الحسنه مهر ایران", "مهر ایران", "پاسارگاد", "بلو", "پایا", "پل"]:
-            if b in raw_text:
-                bank_name = b
-                break
+        if "سپینو" in raw_text:
+            bank_name = "سپینو (بانک قرض الحسنه مهر ایران)"
+        elif "کشاورزی" in raw_text:
+            bank_name = "بانک کشاورزی (پایا)"
+        elif "بام" in raw_text:
+            bank_name = "بام"
+        else:
+            for b in ["بانک کشاورزی", "کشاورزی", "سپینو", "بام", "بانک ملی", "ملی", "صادرات", "تجارت", "ملت", "سامان", "قرض الحسنه مهر ایران", "پاسارگاد", "بلو"]:
+                if b in raw_text:
+                    bank_name = b
+                    break
 
     # استخراج مبلغ
     amount_num = data.get("amount")
-    if not amount_num:
+    if not amount_num or amount_num == 0:
         amt_match = re.search(r'مبلغ\s*[:؛]?\s*([0-9,]+)', normalized_text)
         if amt_match:
             try:
@@ -142,23 +156,60 @@ def categorize_and_parse(data):
         if track_match:
             tracking_number = track_match.group(1)
 
-    # استخراج تلفن‌ها
-    phones_list = re.findall(r'(09[0-9]{9})', normalized_text)
+    # استخراج تلفن‌ها (جداسازی شماره‌های سفارشی کالا مثل شماره روی پلاک)
+    clean_lines_for_phone = []
+    for line in raw_text.split('\n'):
+        if "شماره روی پلاک" in line or "شماره گذاری" in line:
+            continue
+        clean_lines_for_phone.append(line)
+    phone_search_text = "\n".join(clean_lines_for_phone).translate(trans)
+    phones_list = re.findall(r'(09[0-9]{9})', phone_search_text)
     phones_str = ",".join(list(dict.fromkeys(phones_list))) if phones_list else data.get("phones", "")
 
-    # استخراج نام فرستنده / پرداخت‌کننده
-    sender = data.get("sender")
-    if not sender:
-        sender_match = re.search(r'(?:پرداخت\s*توسط|از\s*کارت|مبدا|پرداخت‌کننده)\s*[:؛]?\s*([^\n]+)', raw_text)
-        if sender_match:
-            sender = sender_match.group(1).strip()
+    # استخراج نام مشتری
+    lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
+    filtered_lines = [l for l in lines if l not in ["سپاس💐", "سپاس", "خواهش میکنم 🌺", "خواهش میکنم", "بام", "سلام وقت بخیر", "سلام وقت بخیر ", "تا به اینجا ارسال شد", "✔️تا به اینجا ارسال شد"]]
 
-    # استخراج گیرنده
-    receiver = data.get("receiver")
-    if not receiver:
-        rec_match = re.search(r'(?:گیرنده|متعلق\s*به|مقصد)\s*[:؛]?\s*([^\n]+)', raw_text)
-        if rec_match:
-            receiver = rec_match.group(1).strip()
+    customer_name = data.get("customer_name") or data.get("sender") or ""
+    if not customer_name:
+        if category == "bank_receipt":
+            payer_match = re.search(r'پرداخت\s*توسط\s*[:؛]?\s*([^\n]+)', raw_text)
+            if payer_match:
+                customer_name = payer_match.group(1).strip()
+            else:
+                for l in filtered_lines:
+                    if "هستم" in l:
+                        customer_name = l.replace("هستم", "").replace("سلام وقت بخیر", "").strip()
+                        break
+                    if "مدهنی" in l or "نوروزی" in l:
+                        customer_name = l.split(' ')[0] if " " in l else l
+                        break
+        else:
+            for l in filtered_lines:
+                if not any(kw in l for kw in ["استان", "شهرستان", "شهر", "روستا", "خیابان", "خ ", "کوچه", "پلاک", "منزل", "فروشگاه", "بلوار", "میدان", "عدد", "دستگاه", "پشم چین", "آبخوری", "سرنگ", "پلاک گردنی", "متن", "رنگ"]):
+                    if not re.search(r'09[0-9]{9}', l.translate(trans)) and len(l) < 35:
+                        customer_name = l
+                        break
+
+    # استخراج آدرس
+    address = data.get("address", "")
+    if not address and category == "customer_order":
+        addr_lines = []
+        for l in filtered_lines:
+            if any(kw in l for kw in ["استان", "شهرستان", "شهر", "روستا", "خیابان", "خ ", "کوچه", "پلاک", "منزل", "فروشگاه", "بلوار", "میدان", "گرگان", "اردبیل", "آمل", "سوسنگرد", "عسلویه", "کرج", "گلوگاه", "ایلام", "ملایر", "نکا", "خرم آباد"]):
+                addr_lines.append(l)
+        if addr_lines:
+            address = " ".join(addr_lines)
+
+    # استخراج اقلام سفارش
+    order_item = data.get("order_item", "")
+    if not order_item and category == "customer_order":
+        item_lines = []
+        for l in filtered_lines:
+            if any(kw in l for kw in ["عدد", "دستگاه", "پشم چین", "آبخوری", "سرنگ", "پلاک گردنی"]):
+                item_lines.append(l)
+        if item_lines:
+            order_item = " + ".join(item_lines)
 
     # استخراج تاریخ
     date_str = data.get("date")
@@ -175,16 +226,18 @@ def categorize_and_parse(data):
     return {
         "msg_id": msg_id,
         "category": category,
+        "type": category,
         "bank_name": bank_name or "",
         "amount": amount_num or 0,
         "tracking_number": tracking_number or "",
-        "sender": sender or "",
-        "receiver": receiver or "",
+        "sender": customer_name,
+        "receiver": data.get("receiver", ""),
         "destination_iban": data.get("destination_iban", ""),
         "date_str": date_str or "",
         "phones": phones_str,
-        "customer_name": sender or "",
-        "address": "",
+        "customer_name": customer_name,
+        "address": address,
+        "order_item": order_item,
         "raw_text": raw_text,
         "discount_amount": calculated_discount
     }
@@ -203,12 +256,60 @@ def parse_rubika_html(html_content):
             continue
 
         parsed = categorize_and_parse({"msg_id": msg_id, "raw_text": clean_text})
-        record_id = save_receipt(parsed)
-        if record_id:
-            saved_count += 1
-            records.append({"id": record_id, "msg_id": msg_id, "parsed": parsed})
+        if parsed:
+            record_id = save_receipt(parsed)
+            if record_id:
+                saved_count += 1
+                records.append({"id": record_id, "msg_id": msg_id, "parsed": parsed})
+
+    # خروجی گرفتن برای فایل takhfif_module_export.json
+    get_takhfif_module_export()
 
     return {"saved_count": saved_count, "records": records}
+
+def get_takhfif_module_export():
+    records = get_all_receipts()
+    export_list = []
+
+    for r in records:
+        raw_text = r.get("raw_text", "")
+        msg_id = str(r.get("msg_id", ""))
+
+        if any(ign in raw_text for ign in ["یک سفارش از بالامونده", "یک سفارش از بالا مونده"]) and not r.get("tracking_number"):
+            continue
+
+        cat = r.get("category", "")
+        rec_type = "bank_receipt" if cat == "bank_receipt" or r.get("bank_name") or r.get("tracking_number") else "customer_order"
+
+        cust_name = r.get("customer_name") or r.get("sender") or ""
+        phones = r.get("phones") or ""
+        address = r.get("address") or ""
+        order_item = r.get("order_item") or ""
+
+        item_dict = {
+            "msg_id": msg_id,
+            "customer_name": cust_name,
+            "phones": phones,
+            "address": address,
+            "order_item": order_item,
+            "tracking_number": str(r.get("tracking_number") or ""),
+            "amount": int(r.get("amount") or 0),
+            "bank_name": str(r.get("bank_name") or ""),
+            "date": str(r.get("date_str") or ""),
+            "discount_amount": int(r.get("discount_amount") or 0),
+            "type": rec_type
+        }
+        export_list.append(item_dict)
+
+    export_list = export_list[::-1]
+
+    try:
+        with open(EXPORT_JSON_PATH, 'w', encoding='utf-8') as f:
+            json.dump(export_list, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print("❌ Error writing takhfif_module_export.json:", e)
+
+    return export_list
 
 def save_receipt(parsed_data):
     conn = sqlite3.connect(DB_NAME)
@@ -334,6 +435,14 @@ class ReceiptHandler(http.server.BaseHTTPRequestHandler):
                 self._set_cors_headers()
                 self.end_headers()
                 self.wfile.write(json.dumps({"success": True, "data": res}, ensure_ascii=False).encode('utf-8'))
+
+            elif parsed_url.path == '/api/takhfif_module':
+                export_data = get_takhfif_module_export()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self._set_cors_headers()
+                self.end_headers()
+                self.wfile.write(json.dumps(export_data, ensure_ascii=False, indent=2).encode('utf-8'))
             else:
                 self.send_response(404)
                 self._set_cors_headers()
@@ -412,6 +521,43 @@ class ReceiptHandler(http.server.BaseHTTPRequestHandler):
                 self._set_cors_headers()
                 self.end_headers()
                 self.wfile.write(json.dumps({"success": True, "data": res}, ensure_ascii=False).encode('utf-8'))
+            except Exception as e:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self._set_cors_headers()
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode('utf-8'))
+
+        elif parsed_url.path == '/api/takhfif_module':
+            try:
+                body_str = post_data.decode('utf-8')
+                try:
+                    json_body = json.loads(body_str)
+                    if isinstance(json_body, list):
+                        for item in json_body:
+                            if isinstance(item, dict):
+                                raw = item.get("raw_text") or json.dumps(item, ensure_ascii=False)
+                                parsed = categorize_and_parse({"msg_id": item.get("msg_id", ""), "raw_text": raw, **item})
+                                if parsed:
+                                    save_receipt(parsed)
+                    elif isinstance(json_body, dict):
+                        html_content = json_body.get('html')
+                        if html_content:
+                            parse_rubika_html(html_content)
+                        else:
+                            raw = json_body.get("raw_text") or json.dumps(json_body, ensure_ascii=False)
+                            parsed = categorize_and_parse({"msg_id": json_body.get("msg_id", ""), "raw_text": raw, **json_body})
+                            if parsed:
+                                save_receipt(parsed)
+                except Exception:
+                    parse_rubika_html(body_str)
+
+                export_data = get_takhfif_module_export()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self._set_cors_headers()
+                self.end_headers()
+                self.wfile.write(json.dumps(export_data, ensure_ascii=False, indent=2).encode('utf-8'))
             except Exception as e:
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
