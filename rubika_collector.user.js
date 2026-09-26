@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Rubika Receipt Extractor & Smart Auto-Responder
+// @name         Rubika Group Crawler & Smart Auto-Responder
 // @namespace    http://tampermonkey.net/
-// @version      3.0
-// @description  استخراج سفارش/رسید فقط از گروه هدف روبیکا + پاسخ خودکار
+// @version      4.0
+// @description  خزنده زنده و فقط‌گروه‌هدف روبیکا + ارسال به Broker + پاسخ خودکار
 // @match        https://web.rubika.ir/*
 // @grant        GM_xmlhttpRequest
 // @connect      localhost
@@ -17,6 +17,10 @@
     const API_CLAIM_REPLY = SERVER_BASE + "/api/auto-reply/claim";
     const TARGET_GROUP_ID = "g0HUhDZ03024bd85fad3e51ae86e52e8";
 
+    const SCAN_INTERVAL_MS = 2500;
+    const HISTORY_SCROLL_INTERVAL_MS = 20000;
+    const HISTORY_SCROLL_WAIT_MS = 1200;
+
     const processedMsgKeys = new Set();
     const inFlightMsgKeys = new Set();
     let autoRules = [];
@@ -28,10 +32,10 @@
         'position:fixed;bottom:20px;left:20px;z-index:99999;' +
         'background:#1e1e2e;color:#cdd6f4;padding:12px 16px;border-radius:10px;' +
         'box-shadow:0 4px 15px rgba(0,0,0,0.3);font-family:Tahoma,Vazir,sans-serif;' +
-        'font-size:12px;direction:rtl;min-width:220px;';
+        'font-size:12px;direction:rtl;min-width:240px;';
 
     statusBox.innerHTML =
-        '<div style="font-weight:bold;margin-bottom:5px;color:#89b4fa;">🤖 ربات روبیکا</div>' +
+        '<div style="font-weight:bold;margin-bottom:5px;color:#89b4fa;">🤖 خزنده گروه روبیکا</div>' +
         '<div id="rb-bot-status">در حال بارگذاری...</div>' +
         '<div id="rb-bot-count" style="font-size:11px;color:#a6adc8;margin-top:4px;">پیام: 0 | پاسخ: 0</div>';
 
@@ -42,7 +46,9 @@
         const countEl = document.getElementById('rb-bot-count');
 
         if (statusEl) statusEl.innerText = statusText;
-        if (countEl) countEl.innerText = 'پیام: ' + extractedCount + ' | پاسخ: ' + repliedCount;
+        if (countEl) {
+            countEl.innerText = 'پیام: ' + extractedCount + ' | پاسخ: ' + repliedCount;
+        }
     }
 
     function fetchAutoRules() {
@@ -54,24 +60,63 @@
                     const json = JSON.parse(res.responseText);
                     if (json.success) {
                         autoRules = json.data || [];
-                        if (isTargetGroupOpen()) {
-                            updateStatusUI('گروه هدف فعال است؛ ' + autoRules.length + ' قانون');
-                        } else {
-                            updateStatusUI('گروه هدف باز نیست');
-                        }
+                        updateStatusUI(isTargetGroupOpen()
+                            ? 'گروه هدف فعال است؛ خزنده روشن'
+                            : 'گروه هدف باز نیست');
                     }
                 } catch (e) {
                     updateStatusUI("خطا در خواندن قوانین");
                 }
             },
             onerror: function () {
-                updateStatusUI("سرور محلی در دسترس نیست");
+                updateStatusUI("سرور Broker در دسترس نیست");
             }
         });
     }
 
+    function getTargetRoot() {
+        return document.querySelector(
+            '[data-chat-id="' + TARGET_GROUP_ID + '"]'
+        );
+    }
+
     function isTargetGroupOpen() {
-        return !!document.querySelector('[data-chat-id="' + TARGET_GROUP_ID + '"]');
+        return !!getTargetRoot();
+    }
+
+    function crawlHistory() {
+        const root = getTargetRoot();
+        if (!root) {
+            updateStatusUI("⏳ گروه هدف هنوز باز/لود نشده");
+            return;
+        }
+
+        let candidates = [root].concat(Array.from(root.querySelectorAll('*')));
+
+        candidates = candidates.filter(function (el) {
+            const style = window.getComputedStyle(el);
+            return el.scrollHeight > el.clientHeight + 80 &&
+                (style.overflowY === 'auto' ||
+                 style.overflowY === 'scroll' ||
+                 el === root);
+        });
+
+        if (!candidates.length) return;
+
+        candidates.sort(function (a, b) {
+            return (b.scrollHeight - b.clientHeight) -
+                   (a.scrollHeight - a.clientHeight);
+        });
+
+        const scroller = candidates[0];
+        const before = scroller.scrollTop;
+
+        scroller.scrollTop = 0;
+        scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+
+        if (Math.abs(before - scroller.scrollTop) > 1) {
+            updateStatusUI("🔎 در حال خزیدن تاریخچه گروه...");
+        }
     }
 
     function postMessage(msgId, textContent) {
@@ -87,19 +132,25 @@
             onload: function (res) {
                 try {
                     const json = JSON.parse(res.responseText);
+
                     if (json.success) {
                         processedMsgKeys.add(msgId);
+
                         if (json.id) {
                             extractedCount++;
-                            updateStatusUI(json.message || "✅ پیام ثبت شد");
                         }
+
+                        updateStatusUI(json.message || "✅ پیام بررسی شد");
                     }
-                } catch (e) {}
+                } catch (e) {
+                    updateStatusUI("⚠️ پاسخ Broker نامعتبر بود");
+                }
+
                 inFlightMsgKeys.delete(msgId);
             },
             onerror: function () {
                 inFlightMsgKeys.delete(msgId);
-                updateStatusUI("❌ خطا در ارسال پیام");
+                updateStatusUI("❌ خطا در ارسال پیام به Broker");
             }
         });
     }
@@ -128,6 +179,12 @@
     }
 
     function sendAutoReplyInRubika(replyText) {
+        const root = getTargetRoot();
+        if (!root) {
+            console.warn("⚠️ گروه هدف فعال نیست؛ پاسخ خودکار ارسال نشد.");
+            return;
+        }
+
         const inputEl =
             document.querySelector('div[contenteditable="true"]') ||
             document.querySelector('.input-message-input') ||
@@ -140,6 +197,7 @@
 
         inputEl.focus();
         inputEl.innerText = replyText;
+
         inputEl.dispatchEvent(new InputEvent('input', {
             bubbles: true,
             inputType: 'insertText',
@@ -171,19 +229,21 @@
     }
 
     function scanMessages() {
-        const chatRoot = document.querySelector('[data-chat-id="' + TARGET_GROUP_ID + '"]');
+        const root = getTargetRoot();
 
-        if (!chatRoot) {
+        if (!root) {
             updateStatusUI("⏳ گروه هدف هنوز باز/لود نشده");
             return;
         }
 
-        const groups = chatRoot.querySelectorAll('[data-msg-id]');
+        const groups = root.querySelectorAll('[data-msg-id]');
 
         groups.forEach(function (group) {
             const msgId = group.getAttribute('data-msg-id');
 
-            if (!msgId || processedMsgKeys.has(msgId) || inFlightMsgKeys.has(msgId)) {
+            if (!msgId ||
+                processedMsgKeys.has(msgId) ||
+                inFlightMsgKeys.has(msgId)) {
                 return;
             }
 
@@ -194,7 +254,9 @@
                 return;
             }
 
-            const textContent = (group.innerText || group.textContent || '').trim();
+            const textContent =
+                (group.innerText || group.textContent || '').trim();
+
             if (!textContent) {
                 processedMsgKeys.add(msgId);
                 return;
@@ -211,7 +273,8 @@
                 const keyword = (rule.keyword || '').trim();
                 const ruleId = Number(rule.id || 0);
 
-                if (!keyword || !ruleId || !textContent.includes(keyword)) {
+                if (!keyword || !ruleId ||
+                    !textContent.includes(keyword)) {
                     continue;
                 }
 
@@ -229,11 +292,19 @@
     fetchAutoRules();
     setInterval(fetchAutoRules, 30000);
     setTimeout(scanMessages, 2000);
-    setInterval(scanMessages, 3000);
+    setInterval(scanMessages, SCAN_INTERVAL_MS);
+
+    setInterval(function () {
+        crawlHistory();
+        setTimeout(scanMessages, HISTORY_SCROLL_WAIT_MS);
+    }, HISTORY_SCROLL_INTERVAL_MS);
 
     const observer = new MutationObserver(function () {
         scanMessages();
     });
 
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true
+    });
 })();
