@@ -10,7 +10,7 @@ from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
 PORT = int(os.getenv("BROKER_PORT", "5050"))
-DB_NAME = os.getenv("BROKER_DB_NAME", "receipts.db")
+DB_NAME = os.getenv("BROKER_DB_NAME", "live_receipts.db")
 RUBIKA1_API_KEY = os.getenv("RUBIKA1_API_KEY", "").strip()
 RUBIKA1_API_URL = "https://rubika1.ir/api/v1"
 TARGET_GROUP_ID = os.getenv("RUBIKA_TARGET_GROUP_ID", "g0HUhDZ03024bd85fad3e51ae86e52e8")
@@ -129,8 +129,6 @@ def get_rubika1_order_status(order_id):
         "action": "status",
         "order": order_id
     })
-
-EXPORT_JSON_PATH = "takhfif_module_export.json"
 
 # -------------------------------------------------------------------
 # پارسر صورتحساب و پیام‌های روبیکا طبق قوانین takhfif_module
@@ -393,79 +391,6 @@ def categorize_and_parse(data):
         "reply_text": reply_text
     }
 
-def parse_rubika_html(html_content):
-    matches = re.findall(r'data-msg-id="(\d+)".*?<div class="message">(.*?)(?:<div class="reactions"|</div></div>)', html_content, re.DOTALL)
-    saved_count = 0
-    records = []
-
-    for msg_id, msg_inner in matches:
-        clean_text = re.sub(r'<br\s*/?>', '\n', msg_inner)
-        clean_text = re.sub(r'<[^>]+>', '', clean_text)
-        clean_text = re.sub(r'\n+', '\n', clean_text).strip()
-
-        if not clean_text:
-            continue
-
-        parsed = categorize_and_parse({"msg_id": msg_id, "raw_text": clean_text})
-        if parsed:
-            record_id = save_receipt(parsed)
-            if record_id:
-                saved_count += 1
-                records.append({"id": record_id, "msg_id": msg_id, "parsed": parsed})
-
-    # خروجی گرفتن برای فایل takhfif_module_export.json
-    get_takhfif_module_export()
-
-    return {"saved_count": saved_count, "records": records}
-
-def get_takhfif_module_export():
-    records = get_all_receipts()
-    export_list = []
-
-    for r in records:
-        raw_text = r.get("raw_text", "")
-        msg_id = str(r.get("msg_id", ""))
-
-        if any(ign in raw_text for ign in ["یک سفارش از بالامونده", "یک سفارش از بالا مونده"]) and not r.get("tracking_number"):
-            continue
-
-        cat = r.get("category", "")
-        rec_type = "bank_receipt" if cat == "bank_receipt" or r.get("bank_name") or r.get("tracking_number") else "customer_order"
-
-        cust_name = r.get("customer_name") or r.get("sender") or ""
-        phones = r.get("phones") or ""
-        address = r.get("address") or ""
-        order_item = r.get("order_item") or ""
-
-        item_dict = {
-            "msg_id": msg_id,
-            "customer_name": cust_name,
-            "phones": phones,
-            "address": address,
-            "order_item": order_item,
-            "tracking_number": str(r.get("tracking_number") or ""),
-            "amount": int(r.get("amount") or 0),
-            "bank_name": str(r.get("bank_name") or ""),
-            "date": str(r.get("date_str") or ""),
-            "discount_amount": int(r.get("discount_amount") or 0),
-            "type": rec_type,
-            "score": int(r.get("score") or 0),
-            "status": str(r.get("status") or "pending"),
-            "missing_params": str(r.get("missing_params") or ""),
-            "reply_text": str(r.get("reply_text") or "")
-        }
-        export_list.append(item_dict)
-
-    export_list = export_list[::-1]
-
-    try:
-        with open(EXPORT_JSON_PATH, 'w', encoding='utf-8') as f:
-            json.dump(export_list, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print("❌ Error writing takhfif_module_export.json:", e)
-
-    return export_list
-
 def save_receipt(parsed_data):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -620,13 +545,6 @@ class ReceiptHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps({"success": True, "data": res}, ensure_ascii=False).encode('utf-8'))
 
-            elif parsed_url.path == '/api/takhfif_module':
-                export_data = get_takhfif_module_export()
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json; charset=utf-8')
-                self._set_cors_headers()
-                self.end_headers()
-                self.wfile.write(json.dumps(export_data, ensure_ascii=False, indent=2).encode('utf-8'))
             else:
                 self.send_response(404)
                 self._set_cors_headers()
@@ -754,65 +672,6 @@ class ReceiptHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps({"success": False, "error": str(e)}, ensure_ascii=False).encode('utf-8'))
 
-        elif parsed_url.path == '/api/import-html':
-            try:
-                body_str = post_data.decode('utf-8')
-                try:
-                    json_body = json.loads(body_str)
-                    html_content = json_body.get('html', body_str)
-                except Exception:
-                    html_content = body_str
-
-                res = parse_rubika_html(html_content)
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json; charset=utf-8')
-                self._set_cors_headers()
-                self.end_headers()
-                self.wfile.write(json.dumps({"success": True, "data": res}, ensure_ascii=False).encode('utf-8'))
-            except Exception as e:
-                self.send_response(400)
-                self.send_header('Content-Type', 'application/json; charset=utf-8')
-                self._set_cors_headers()
-                self.end_headers()
-                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode('utf-8'))
-
-        elif parsed_url.path == '/api/takhfif_module':
-            try:
-                body_str = post_data.decode('utf-8')
-                try:
-                    json_body = json.loads(body_str)
-                    if isinstance(json_body, list):
-                        for item in json_body:
-                            if isinstance(item, dict):
-                                raw = item.get("raw_text") or json.dumps(item, ensure_ascii=False)
-                                parsed = categorize_and_parse({"msg_id": item.get("msg_id", ""), "raw_text": raw, **item})
-                                if parsed:
-                                    save_receipt(parsed)
-                    elif isinstance(json_body, dict):
-                        html_content = json_body.get('html')
-                        if html_content:
-                            parse_rubika_html(html_content)
-                        else:
-                            raw = json_body.get("raw_text") or json.dumps(json_body, ensure_ascii=False)
-                            parsed = categorize_and_parse({"msg_id": json_body.get("msg_id", ""), "raw_text": raw, **json_body})
-                            if parsed:
-                                save_receipt(parsed)
-                except Exception:
-                    parse_rubika_html(body_str)
-
-                export_data = get_takhfif_module_export()
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json; charset=utf-8')
-                self._set_cors_headers()
-                self.end_headers()
-                self.wfile.write(json.dumps(export_data, ensure_ascii=False, indent=2).encode('utf-8'))
-            except Exception as e:
-                self.send_response(400)
-                self.send_header('Content-Type', 'application/json; charset=utf-8')
-                self._set_cors_headers()
-                self.end_headers()
-                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode('utf-8'))
-
     def do_DELETE(self):
         parsed_url = urlparse(self.path)
         if parsed_url.path.startswith('/api/auto-responses/'):
@@ -832,7 +691,8 @@ class ReceiptHandler(http.server.BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     init_db()
-    print(f"🚀 سرور ماژول تخفیف و پنل Rubika1 روی پورت {PORT} فعال شد...")
+    print(f"🚀 سرور زنده Broker و پنل Rubika1 روی پورت {PORT} فعال شد...")
+    print(f"🗄️ دیتابیس زنده: {DB_NAME}")
     print(f"🎯 گروه هدف روبیکا: {TARGET_GROUP_ID}")
     print(f"🔐 API Key: {'تنظیم شده' if RUBIKA1_API_KEY else 'تنظیم نشده'}")
 
