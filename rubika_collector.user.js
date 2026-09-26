@@ -18,6 +18,7 @@
     const TARGET_GROUP_ID = "g0HUhDZ03024bd85fad3e51ae86e52e8";
 
     const processedMsgKeys = new Set();
+    const inFlightMsgKeys = new Set();
     let autoRules = [];
     let extractedCount = 0;
     let repliedCount = 0;
@@ -86,13 +87,18 @@
             onload: function (res) {
                 try {
                     const json = JSON.parse(res.responseText);
-                    if (json.success && json.id) {
-                        extractedCount++;
-                        updateStatusUI(json.message || "✅ پیام ثبت شد");
+                    if (json.success) {
+                        processedMsgKeys.add(msgId);
+                        if (json.id) {
+                            extractedCount++;
+                            updateStatusUI(json.message || "✅ پیام ثبت شد");
+                        }
                     }
                 } catch (e) {}
+                inFlightMsgKeys.delete(msgId);
             },
             onerror: function () {
+                inFlightMsgKeys.delete(msgId);
                 updateStatusUI("❌ خطا در ارسال پیام");
             }
         });
@@ -177,22 +183,24 @@
         groups.forEach(function (group) {
             const msgId = group.getAttribute('data-msg-id');
 
-            if (!msgId || processedMsgKeys.has(msgId)) {
+            if (!msgId || processedMsgKeys.has(msgId) || inFlightMsgKeys.has(msgId)) {
                 return;
             }
 
             const classes = (group.getAttribute('class') || '').toLowerCase();
-            processedMsgKeys.add(msgId);
 
             if (classes.includes('service')) {
+                processedMsgKeys.add(msgId);
                 return;
             }
 
             const textContent = (group.innerText || group.textContent || '').trim();
             if (!textContent) {
+                processedMsgKeys.add(msgId);
                 return;
             }
 
+            inFlightMsgKeys.add(msgId);
             postMessage(msgId, textContent);
 
             if (classes.includes('is-sent')) {
