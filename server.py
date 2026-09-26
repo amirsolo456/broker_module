@@ -5,13 +5,15 @@ import sqlite3
 import re
 import urllib.request
 import urllib.parse
+import os
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
-PORT = 5050
-DB_NAME = "receipts.db"
-RUBIKA1_API_KEY = "1925d2w5f2m9q7rbzf7qct2g88eg7cnj"
+PORT = int(os.getenv("BROKER_PORT", "5050"))
+DB_NAME = os.getenv("BROKER_DB_NAME", "receipts.db")
+RUBIKA1_API_KEY = os.getenv("RUBIKA1_API_KEY", "").strip()
 RUBIKA1_API_URL = "https://rubika1.ir/api/v1"
+TARGET_GROUP_ID = os.getenv("RUBIKA_TARGET_GROUP_ID", "g0HUhDZ03024bd85fad3e51ae86e52e8")
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
@@ -60,6 +62,16 @@ def init_db():
         )
     ''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS auto_reply_claims (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            msg_id TEXT NOT NULL,
+            rule_id INTEGER NOT NULL,
+            claimed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(msg_id, rule_id)
+        )
+    ''')
+
     cursor.execute("SELECT COUNT(*) FROM auto_responses")
     if cursor.fetchone()[0] == 0:
         default_rules = [
@@ -77,7 +89,10 @@ def init_db():
 # توابع مربوط به API پنل rubika1.ir
 # -------------------------------------------------------------------
 def rubika1_request(payload):
+    if not RUBIKA1_API_KEY:
+        return {"status": "error", "message": "RUBIKA1_API_KEY تنظیم نشده است."}
     try:
+        payload = dict(payload)
         payload["key"] = RUBIKA1_API_KEY
         data = urllib.parse.urlencode(payload).encode('utf-8')
         req = urllib.request.Request(
@@ -120,6 +135,17 @@ EXPORT_JSON_PATH = "takhfif_module_export.json"
 # -------------------------------------------------------------------
 # پارسر صورتحساب و پیام‌های روبیکا طبق قوانین takhfif_module
 # -------------------------------------------------------------------
+def to_int(value):
+    if value is None or value == "":
+        return 0
+    try:
+        if isinstance(value, str):
+            value = value.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
+            value = value.replace(",", "").replace("٬", "").replace("،", "").strip()
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
 def categorize_and_parse(data):
     raw_text = data.get("raw_text", "").strip()
     msg_id = str(data.get("msg_id", ""))
@@ -151,8 +177,8 @@ def categorize_and_parse(data):
                     break
 
     # استخراج مبلغ
-    amount_num = data.get("amount")
-    if not amount_num or amount_num == 0:
+    amount_num = to_int(data.get("amount"))
+    if not amount_num:
         amt_match = re.search(r'مبلغ\s*[:؛]?\s*([0-9,]+)', normalized_text)
         if amt_match:
             try:
@@ -161,7 +187,7 @@ def categorize_and_parse(data):
                 amount_num = 0
 
     # استخراج شماره پیگیری
-    tracking_number = data.get("tracking_number")
+    tracking_number = str(data.get("tracking_number") or "").translate(trans)
     if not tracking_number:
         track_match = re.search(r'(?:شماره\s*پیگیری|پیگیری|کد\s*پیگیری)\s*[:؛]?\s*([0-9]+)', normalized_text)
         if track_match:
@@ -565,6 +591,13 @@ class ReceiptHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps({"success": True, "data": res}, ensure_ascii=False).encode('utf-8'))
 
+            elif parsed_url.path == '/api/smm/order':
+                self.send_response(405)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self._set_cors_headers()
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": "برای ثبت سفارش از POST استفاده کنید."}, ensure_ascii=False).encode('utf-8'))
+
             elif parsed_url.path == '/api/smm/status':
                 query_params = parse_qs(parsed_url.query)
                 order_id = query_params.get('order', [''])[0]
@@ -606,12 +639,29 @@ class ReceiptHandler(http.server.BaseHTTPRequestHandler):
         if parsed_url.path == '/api/receipts':
             try:
                 data = json.loads(post_data.decode('utf-8'))
+                source_chat_id = str(data.get("chat_id") or data.get("source_chat_id") or "").strip()
+                if source_chat_id and source_chat_id != TARGET_GROUP_ID:
+                    self.send_response(403)
+                    self.send_header('Content-Type', 'application/json; charset=utf-8')
+                    self._set_cors_headers()
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": False, "error": "پیام متعلق به گروه هدف نیست."}, ensure_ascii=False).encode('utf-8'))
+                    return
+
                 parsed = categorize_and_parse(data)
+                if parsed is None:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json; charset=utf-8')
+                    self._set_cors_headers()
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"success": True, "message": "پیام نادیده گرفته شد", "id": None, "parsed": None}, ensure_ascii=False).encode('utf-8'))
+                    return
+
                 record_id = save_receipt(parsed)
 
                 response_data = {
                     "success": True,
-                    "message": "صورتحساب ثبت شد" if record_id else "صورتحساب تکراری بود",
+                    "message": "سفارش/رسید ثبت شد" if record_id else "پیام تکراری بود",
                     "id": record_id,
                     "parsed": parsed
                 }
@@ -644,6 +694,53 @@ class ReceiptHandler(http.server.BaseHTTPRequestHandler):
                 self._set_cors_headers()
                 self.end_headers()
                 self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode('utf-8'))
+
+        elif parsed_url.path == '/api/smm/order':
+            try:
+                data = json.loads(post_data.decode('utf-8'))
+                service_id = str(data.get("service") or "").strip()
+                link = str(data.get("link") or "").strip()
+                quantity = to_int(data.get("quantity"))
+                comments = str(data.get("comments") or "").strip()
+                if not service_id or not link or quantity <= 0:
+                    raise ValueError("service، link و quantity الزامی هستند.")
+                res = add_rubika1_order(service_id, link, quantity, comments)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self._set_cors_headers()
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "data": res}, ensure_ascii=False).encode('utf-8'))
+            except Exception as e:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self._set_cors_headers()
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}, ensure_ascii=False).encode('utf-8'))
+
+        elif parsed_url.path == '/api/auto-reply/claim':
+            try:
+                data = json.loads(post_data.decode('utf-8'))
+                msg_id = str(data.get("msg_id") or "").strip()
+                rule_id = to_int(data.get("rule_id"))
+                if not msg_id or rule_id <= 0:
+                    raise ValueError("msg_id و rule_id الزامی هستند.")
+                conn = sqlite3.connect(DB_NAME)
+                cursor = conn.cursor()
+                cursor.execute("INSERT OR IGNORE INTO auto_reply_claims (msg_id, rule_id) VALUES (?, ?)", (msg_id, rule_id))
+                claimed = cursor.rowcount == 1
+                conn.commit()
+                conn.close()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self._set_cors_headers()
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": True, "claimed": claimed}, ensure_ascii=False).encode('utf-8'))
+            except Exception as e:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self._set_cors_headers()
+                self.end_headers()
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}, ensure_ascii=False).encode('utf-8'))
 
         elif parsed_url.path == '/api/import-html':
             try:
@@ -724,7 +821,8 @@ class ReceiptHandler(http.server.BaseHTTPRequestHandler):
 if __name__ == "__main__":
     init_db()
     print(f"🚀 سرور ماژول تخفیف و پنل Rubika1 روی پورت {PORT} فعال شد...")
-    print(f"🔑 کلید API ثبت شده: {RUBIKA1_API_KEY[:6]}...")
+    print(f"🎯 گروه هدف روبیکا: {TARGET_GROUP_ID}")
+    print(f"🔐 API Key: {'تنظیم شده' if RUBIKA1_API_KEY else 'تنظیم نشده'}")
 
     with socketserver.TCPServer(("", PORT), ReceiptHandler) as httpd:
         try:
