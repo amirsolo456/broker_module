@@ -146,9 +146,24 @@ def to_int(value):
     except (TypeError, ValueError):
         return 0
 
+def is_relevant_message(raw_text):
+    bank_keywords = [
+        "رسید", "بانک", "مبلغ", "پیگیری", "حساب", "شبا",
+        "پایا", "کارت به کارت", "سپینو", "بام", "انتقال یافت"
+    ]
+    order_keywords = [
+        "سفارش", "عدد", "دستگاه", "پشم چین", "پشمچین",
+        "آبخوری", "سرنگ", "پلاک گردنی", "قیچی", "سم چین",
+        "ماشین", "فاکتور"
+    ]
+    return any(k in raw_text for k in bank_keywords + order_keywords)
+
 def categorize_and_parse(data):
     raw_text = data.get("raw_text", "").strip()
     msg_id = str(data.get("msg_id", ""))
+
+    if not raw_text or not is_relevant_message(raw_text):
+        return None
 
     trans = str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789')
     normalized_text = raw_text.translate(trans)
