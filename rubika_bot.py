@@ -123,16 +123,20 @@ async def main():
                         continue
 
                     classes = (await group.get_attribute("class") or "").lower()
-                    processed_messages.add(msg_id)
-
                     if "service" in classes:
+                        processed_messages.add(msg_id)
                         continue
 
                     text = (await group.inner_text()).strip()
                     if not text:
+                        processed_messages.add(msg_id)
                         continue
 
-                    send_to_discount_module(msg_id, text)
+                    result = send_to_discount_module(msg_id, text)
+                    if result is None:
+                        continue
+
+                    processed_messages.add(msg_id)
 
                     is_outgoing = "is-sent" in classes
                     if is_outgoing:
