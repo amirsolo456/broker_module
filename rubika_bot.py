@@ -1,93 +1,87 @@
 import asyncio
-import re
-import json
+import os
 import requests
 from playwright.async_api import async_playwright
 
-# -------------------------------------------------------------------
-# تنظیمات ربات و پاسخگوی هوشمند
-# -------------------------------------------------------------------
-RUBIKA_URL = "https://web.rubika.ir/#c=g0HUhDZ03024bd85fad3e51ae86e52e8"
-SERVER_BASE = "http://localhost:5000"
+TARGET_GROUP_ID = os.getenv("RUBIKA_TARGET_GROUP_ID", "g0HUhDZ03024bd85fad3e51ae86e52e8")
+RUBIKA_URL = f"https://web.rubika.ir/#c={TARGET_GROUP_ID}"
+SERVER_BASE = os.getenv("BROKER_SERVER_BASE", "http://localhost:5050").rstrip("/")
 API_RECEIPTS = f"{SERVER_BASE}/api/receipts"
 API_RULES = f"{SERVER_BASE}/api/auto-responses"
-USER_DATA_DIR = "./rubika_user_session"
+API_CLAIM_REPLY = f"{SERVER_BASE}/api/auto-reply/claim"
+USER_DATA_DIR = os.getenv("RUBIKA_USER_DATA_DIR", "./rubika_user_session")
 
 processed_messages = set()
 auto_rules = []
 
 def fetch_auto_rules():
-    """دریافت آخرین قوانین پاسخگوی هوشمند از سرور"""
     global auto_rules
     try:
         res = requests.get(API_RULES, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            if data.get("success"):
-                auto_rules = data.get("data", [])
-                print(f"🔄 قوانین پاسخگوی هوشمند به‌روزرسانی شد: {len(auto_rules)} قانون فعال")
+        res.raise_for_status()
+        data = res.json()
+        if data.get("success"):
+            auto_rules = data.get("data", []) or []
+            print(f"🔄 قوانین پاسخگو: {len(auto_rules)}")
     except Exception as e:
-        print("⚠️ خطا در دریافت قوانین پاسخگوی هوشمند:", e)
+        print("⚠️ دریافت قوانین ناموفق:", e)
 
-def parse_receipt_text(text: str) -> dict:
-    """استخراج و طبقه‌بندی اطلاعات صورتحساب"""
-    clean_text = text.strip()
-
-    parsed = {
-        "raw_text": clean_text,
-        "bank_name": None,
-        "amount": None,
-        "tracking_number": None,
-        "sender": None,
-        "receiver": None,
-        "destination_iban": None,
-        "date": None,
-        "phones": []
-    }
-
-    bank_match = re.search(r'(بانک\s+[\u0600-\u06FF]+|بلوبانک|بانکت)', clean_text)
-    if bank_match:
-        parsed["bank_name"] = bank_match.group(0)
-
-    amount_match = re.search(r'مبلغ[:\s]*([\d,۰-۹]+)\s*(ریال|تومان)?', clean_text)
-    if amount_match:
-        parsed["amount"] = amount_match.group(1).replace(',', '').replace('،', '')
-
-    track_match = re.search(r'(?:شماره|کد)\s*پیگیری[:\s]*([\d۰-۹]+)', clean_text)
-    if track_match:
-        parsed["tracking_number"] = track_match.group(1)
-
-    phones = re.findall(r'(?:09|۰۹)[\d۰-۹]{9}', clean_text)
-    if phones:
-        parsed["phones"] = list(set(phones))
-
-    return parsed
-
-def send_to_discount_module(payload: dict):
-    """ارسال اطلاعات صورتحساب به سرور ماژول تخفیف"""
+def send_to_discount_module(msg_id, text):
     try:
-        res = requests.post(API_RECEIPTS, json=payload, timeout=5)
-        print("✅ صورتحساب به سرور ارسال شد:", res.json().get("message"))
+        res = requests.post(
+            API_RECEIPTS,
+            json={
+                "msg_id": msg_id,
+                "chat_id": TARGET_GROUP_ID,
+                "raw_text": text,
+            },
+            timeout=5,
+        )
+        data = res.json()
+        print(f"📥 پیام {msg_id} → {data.get('message', 'ثبت شد')}")
+        return data
     except Exception as e:
-        print("❌ خطا در ارسال صورتحساب:", e)
+        print("❌ ارسال پیام به سرور ناموفق:", e)
+        return None
+
+def claim_auto_reply(msg_id, rule_id):
+    try:
+        res = requests.post(
+            API_CLAIM_REPLY,
+            json={"msg_id": msg_id, "rule_id": rule_id},
+            timeout=5,
+        )
+        data = res.json()
+        return bool(data.get("success") and data.get("claimed"))
+    except Exception as e:
+        print("⚠️ Claim پاسخ ناموفق:", e)
+        return False
 
 async def send_auto_reply(page, reply_text):
-    """ارسال پاسخ خودکار در چت روبیکا توسط Playwright"""
     try:
-        print(f"💬 در حال ارسال پاسخ خودکار: {reply_text}")
+        selectors = [
+            'div[contenteditable="true"]',
+            '.input-message-input',
+            '.textbox-field-input',
+        ]
+        input_el = None
+        for selector in selectors:
+            input_el = await page.query_selector(selector)
+            if input_el:
+                break
 
-        # پیدا کردن کادر ورودی پیام
-        input_selector = 'div[contenteditable="true"], .input-message-input, .textbox-field-input'
-        await page.wait_for_selector(input_selector, timeout=3000)
+        if not input_el:
+            print("⚠️ کادر ارسال پیام پیدا نشد.")
+            return False
 
-        input_el = await page.query_selector(input_selector)
-        if input_el:
-            await input_el.focus()
-            await input_el.fill(reply_text)
-            await page.keyboard.press('Enter')
-            print("✅ پاسخ خودکار ارسال شد.")
+        await input_el.click()
+        await input_el.fill(reply_text)
+        await page.keyboard.press("Enter")
+        print("✅ پاسخ خودکار ارسال شد.")
+        return True
     except Exception as e:
-        print("⚠️ خطا در ارسال پاسخ خودکار:", e)
+        print("⚠️ خطا در ارسال پاسخ:", e)
+        return False
 
 async def main():
     fetch_auto_rules()
@@ -96,45 +90,66 @@ async def main():
         context = await p.chromium.launch_persistent_context(
             user_data_dir=USER_DATA_DIR,
             headless=False,
-            args=["--no-sandbox", "--disable-setuid-sandbox"]
+            args=["--no-sandbox", "--disable-setuid-sandbox"],
         )
-
         page = await context.new_page()
-        print(f"🌐 در حال باز کردن روبیکا وب: {RUBIKA_URL}")
-        await page.goto(RUBIKA_URL)
+        print(f"🌐 باز کردن گروه هدف: {RUBIKA_URL}")
+        await page.goto(RUBIKA_URL, wait_until="domcontentloaded")
         await page.wait_for_timeout(5000)
 
         loop_counter = 0
+        warned_not_in_group = False
+
         while True:
             loop_counter += 1
             if loop_counter % 10 == 0:
-                fetch_auto_rules() # بروزرسانی قوانین هر ۳۰ ثانیه
+                fetch_auto_rules()
 
             try:
-                elements = await page.query_selector_all('div[rb-copyable], div[style*="unicode-bidi"]')
+                chat_root = await page.query_selector(f'[data-chat-id="{TARGET_GROUP_ID}"]')
+                if not chat_root:
+                    if not warned_not_in_group:
+                        print("⚠️ کانتینر گروه هدف در DOM پیدا نشد؛ منتظر لود روبیکا...")
+                        warned_not_in_group = True
+                    await asyncio.sleep(3)
+                    continue
 
-                for el in elements:
-                    text = await el.inner_text()
-                    text = text.strip()
+                warned_not_in_group = False
+                groups = await chat_root.query_selector_all("[data-msg-id]")
 
-                    if text and text not in processed_messages:
-                        processed_messages.add(text)
+                for group in groups:
+                    msg_id = await group.get_attribute("data-msg-id")
+                    if not msg_id or msg_id in processed_messages:
+                        continue
 
-                        # ۱. بررسی و ثبت صورتحساب
-                        if any(kw in text for kw in ["رسید", "مبلغ", "پیگیری", "بانک"]):
-                            parsed_data = parse_receipt_text(text)
-                            send_to_discount_module(parsed_data)
+                    classes = (await group.get_attribute("class") or "").lower()
+                    processed_messages.add(msg_id)
 
-                        # ۲. بررسی کلمات کلیدی پاسخگوی هوشمند
-                        for rule in auto_rules:
-                            keyword = rule.get("keyword", "").strip()
-                            if keyword and keyword in text:
-                                print(f"🎯 تطابق کلمه کلیدی: '{keyword}'")
-                                await send_auto_reply(page, rule.get("response_text", ""))
-                                break
+                    if "service" in classes:
+                        continue
+
+                    text = (await group.inner_text()).strip()
+                    if not text:
+                        continue
+
+                    send_to_discount_module(msg_id, text)
+
+                    is_outgoing = "is-sent" in classes
+                    if is_outgoing:
+                        continue
+
+                    for rule in auto_rules:
+                        keyword = str(rule.get("keyword") or "").strip()
+                        rule_id = int(rule.get("id") or 0)
+                        if not keyword or not rule_id or keyword not in text:
+                            continue
+
+                        if claim_auto_reply(msg_id, rule_id):
+                            await send_auto_reply(page, str(rule.get("response_text") or ""))
+                        break
 
             except Exception as e:
-                print("⚠️ خطا در پایش صفحه:", e)
+                print("⚠️ خطا در پایش گروه:", e)
 
             await asyncio.sleep(3)
 
