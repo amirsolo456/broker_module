@@ -1015,25 +1015,7 @@ class _ReceiptsHomePageState extends State<ReceiptsHomePage> with SingleTickerPr
     );
   }
 
-  Widget _buildDetailRow(String label, String value, {bool isBold = false}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(label, style: TextStyle(color: Colors.grey.shade700, fontSize: 12)),
-          SelectableText(
-            value,
-            style: TextStyle(
-              fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
-              fontSize: isBold ? 13 : 12,
-              color: isBold ? Colors.black87 : Colors.grey.shade900,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+
 
   Widget _buildErrorWidget() {
     return Center(
@@ -1077,51 +1059,7 @@ class _ReceiptsHomePageState extends State<ReceiptsHomePage> with SingleTickerPr
     );
   }
 
-  void _showRawDialog(Map<String, dynamic> item) {
-    showDialog(
-      context: context,
-      builder: (context) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: AlertDialog(
-          title: const Text('جزئیات کامل صورتحساب'),
-          content: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text('متن خام استخراج شده از روبیکا:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                const SizedBox(height: 6),
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade100,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: SelectableText(
-                    item['raw_text'] ?? '',
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                const Text('اطلاعات طبقه‌بندی شده:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                const SizedBox(height: 6),
-                SelectableText(
-                  const JsonEncoder.withIndent('  ').convert(item),
-                  style: const TextStyle(fontSize: 11, fontFamily: 'monospace', color: Color(0xFF0D47A1)),
-                )
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('بستن'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+
 
   void showAddRuleDialog() {
     final kwController = TextEditingController();
