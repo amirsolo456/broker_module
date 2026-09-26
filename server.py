@@ -72,15 +72,8 @@ def init_db():
         )
     ''')
 
-    cursor.execute("SELECT COUNT(*) FROM auto_responses")
-    if cursor.fetchone()[0] == 0:
-        default_rules = [
-            ("تخفیف", "سلام 👋 برای دریافت کد تخفیف، رسید پرداخت خود را ارسال کنید تا سیستم خودکار برایتان محاسبه کند.", "contains"),
-            ("شماره کارت", "شماره کارت جهت واریز:\n۶۰۳۷۹۹۷۹۱۲۳۴۵۶۷۸\nبه نام فروشگاه خاتون", "contains"),
-            ("پشتیبانی", "جهت ارتباط با پشتیبانی می‌توانید با شماره ۰۹۱۲۰۰۰۰۰۰۰ تماس بگیرید یا منتظر پاسخ همکاران باشید.", "contains"),
-            ("ساعت کاری", "ساعت کاری مجموعه: شنبه تا چهارشنبه از ساعت ۹ الی ۱۸", "contains")
-        ]
-        cursor.executemany("INSERT INTO auto_responses (keyword, response_text, match_type) VALUES (?, ?, ?)", default_rules)
+    # هیچ قانون پاسخ خودکار یا اطلاعات کسب‌وکار به‌صورت ثابت در سورس Seed نمی‌شود.
+    # قوانین فقط از طریق API /api/auto-responses و پنل مدیریت ثبت می‌شوند.
 
     conn.commit()
     conn.close()
