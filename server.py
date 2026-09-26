@@ -35,14 +35,19 @@ def init_db():
             raw_text TEXT,
             discount_applied INTEGER DEFAULT 0,
             discount_amount INTEGER DEFAULT 0,
+            score INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'pending',
+            missing_params TEXT DEFAULT '',
+            reply_text TEXT DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
 
-    try:
-        cursor.execute("ALTER TABLE receipts ADD COLUMN order_item TEXT")
-    except Exception:
-        pass
+    for col in ["order_item TEXT", "score INTEGER DEFAULT 0", "status TEXT DEFAULT 'pending'", "missing_params TEXT DEFAULT ''", "reply_text TEXT DEFAULT ''"]:
+        try:
+            cursor.execute(f"ALTER TABLE receipts ADD COLUMN {col}")
+        except Exception:
+            pass
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS auto_responses (
@@ -235,6 +240,39 @@ def categorize_and_parse(data):
     if amount_num and amount_num >= 1000000:
         calculated_discount = int(amount_num * 0.05)
 
+    # -------------------------------------------------------------------
+    # نمره‌گذاری و تعیین وضعیت طبق قوانین broker_order_recognition_rules
+    # -------------------------------------------------------------------
+    has_name = bool(customer_name and len(customer_name.strip()) >= 2)
+    has_address = bool(address and len(address.strip()) >= 5)
+    has_phone = bool(phones_str and len(phones_str.strip()) >= 10)
+    has_items = bool(order_item and len(order_item.strip()) >= 2)
+    has_payment = bool(tracking_number or (amount_num and amount_num > 0) or bank_name)
+
+    score = 0
+    if has_name: score += 20
+    if has_address: score += 20
+    if has_phone: score += 20
+    if has_items: score += 30
+    if has_payment: score += 10
+
+    missing_list = []
+    if not has_name: missing_list.append("نام و نام خانوادگی")
+    if not has_address: missing_list.append("آدرس کامل")
+    if not has_phone: missing_list.append("شماره تماس")
+    if not has_items: missing_list.append("اقلام و تعداد سفارش")
+    if not has_payment: missing_list.append("فیش/رسید واریز")
+
+    missing_params = " ، ".join(missing_list) if missing_list else ""
+
+    if score >= 97:
+        status = "completed"
+        reply_text = ""
+    else:
+        status = "pending"
+        reply_lines = [f"- {m}" for m in missing_list]
+        reply_text = "سفارش شما دریافت شد ✅\nبرای تکمیل ثبت فاکتور لطفاً ارسال کنید:\n" + "\n".join(reply_lines)
+
     return {
         "msg_id": msg_id,
         "category": category,
@@ -251,7 +289,11 @@ def categorize_and_parse(data):
         "address": address,
         "order_item": order_item,
         "raw_text": raw_text,
-        "discount_amount": calculated_discount
+        "discount_amount": calculated_discount,
+        "score": score,
+        "status": status,
+        "missing_params": missing_params,
+        "reply_text": reply_text
     }
 
 def parse_rubika_html(html_content):
@@ -309,7 +351,11 @@ def get_takhfif_module_export():
             "bank_name": str(r.get("bank_name") or ""),
             "date": str(r.get("date_str") or ""),
             "discount_amount": int(r.get("discount_amount") or 0),
-            "type": rec_type
+            "type": rec_type,
+            "score": int(r.get("score") or 0),
+            "status": str(r.get("status") or "pending"),
+            "missing_params": str(r.get("missing_params") or ""),
+            "reply_text": str(r.get("reply_text") or "")
         }
         export_list.append(item_dict)
 
@@ -343,19 +389,18 @@ def save_receipt(parsed_data):
         INSERT INTO receipts (
             msg_id, category, bank_name, amount, tracking_number,
             sender, receiver, destination_iban, date_str, phones,
-            customer_name, address, order_item, raw_text, discount_amount
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            customer_name, address, order_item, raw_text, discount_amount,
+            score, status, missing_params, reply_text
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         parsed_data["msg_id"], parsed_data["category"], parsed_data["bank_name"],
         parsed_data["amount"], parsed_data["tracking_number"], parsed_data["sender"],
         parsed_data["receiver"], parsed_data["destination_iban"], parsed_data["date_str"],
         parsed_data["phones"], parsed_data["customer_name"], parsed_data["address"],
-        parsed_data.get("order_item", ""), parsed_data["raw_text"], parsed_data["discount_amount"]
+        parsed_data.get("order_item", ""), parsed_data["raw_text"], parsed_data["discount_amount"],
+        parsed_data.get("score", 0), parsed_data.get("status", "pending"),
+        parsed_data.get("missing_params", ""), parsed_data.get("reply_text", "")
     ))
-    conn.commit()
-    inserted_id = cursor.lastrowid
-    conn.close()
-    return inserted_id
     conn.commit()
     inserted_id = cursor.lastrowid
     conn.close()

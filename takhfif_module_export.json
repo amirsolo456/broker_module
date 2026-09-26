@@ -10,7 +10,11 @@
     "bank_name": "",
     "date": "",
     "discount_amount": 0,
-    "type": "customer_order"
+    "type": "customer_order",
+    "score": 90,
+    "status": "pending",
+    "missing_params": "فیش/رسید واریز",
+    "reply_text": "سفارش شما دریافت شد ✅\nبرای تکمیل ثبت فاکتور لطفاً ارسال کنید:\n- فیش/رسید واریز"
   },
   {
     "msg_id": "1919045914770829",
@@ -23,7 +27,11 @@
     "bank_name": "",
     "date": "",
     "discount_amount": 0,
-    "type": "customer_order"
+    "type": "customer_order",
+    "score": 90,
+    "status": "pending",
+    "missing_params": "فیش/رسید واریز",
+    "reply_text": "سفارش شما دریافت شد ✅\nبرای تکمیل ثبت فاکتور لطفاً ارسال کنید:\n- فیش/رسید واریز"
   },
   {
     "msg_id": "1919761269808829",
@@ -36,7 +44,11 @@
     "bank_name": "بام",
     "date": "1405/07/03  14:03",
     "discount_amount": 5000000,
-    "type": "bank_receipt"
+    "type": "bank_receipt",
+    "score": 30,
+    "status": "pending",
+    "missing_params": "آدرس کامل ، شماره تماس ، اقلام و تعداد سفارش",
+    "reply_text": "سفارش شما دریافت شد ✅\nبرای تکمیل ثبت فاکتور لطفاً ارسال کنید:\n- آدرس کامل\n- شماره تماس\n- اقلام و تعداد سفارش"
   },
   {
     "msg_id": "1919767274696829",
@@ -49,7 +61,11 @@
     "bank_name": "",
     "date": "",
     "discount_amount": 0,
-    "type": "customer_order"
+    "type": "customer_order",
+    "score": 90,
+    "status": "pending",
+    "missing_params": "فیش/رسید واریز",
+    "reply_text": "سفارش شما دریافت شد ✅\nبرای تکمیل ثبت فاکتور لطفاً ارسال کنید:\n- فیش/رسید واریز"
   },
   {
     "msg_id": "1919768276664829",
@@ -62,7 +78,11 @@
     "bank_name": "",
     "date": "",
     "discount_amount": 0,
-    "type": "customer_order"
+    "type": "customer_order",
+    "score": 90,
+    "status": "pending",
+    "missing_params": "فیش/رسید واریز",
+    "reply_text": "سفارش شما دریافت شد ✅\nبرای تکمیل ثبت فاکتور لطفاً ارسال کنید:\n- فیش/رسید واریز"
   },
   {
     "msg_id": "1919770277571829",
@@ -75,7 +95,11 @@
     "bank_name": "بلو",
     "date": "",
     "discount_amount": 0,
-    "type": "bank_receipt"
+    "type": "bank_receipt",
+    "score": 100,
+    "status": "completed",
+    "missing_params": "",
+    "reply_text": ""
   },
   {
     "msg_id": "1920488644807829",
@@ -88,7 +112,11 @@
     "bank_name": "",
     "date": "",
     "discount_amount": 0,
-    "type": "customer_order"
+    "type": "customer_order",
+    "score": 90,
+    "status": "pending",
+    "missing_params": "فیش/رسید واریز",
+    "reply_text": "سفارش شما دریافت شد ✅\nبرای تکمیل ثبت فاکتور لطفاً ارسال کنید:\n- فیش/رسید واریز"
   },
   {
     "msg_id": "1920493646067829",
@@ -101,7 +129,11 @@
     "bank_name": "بلو",
     "date": "",
     "discount_amount": 0,
-    "type": "bank_receipt"
+    "type": "bank_receipt",
+    "score": 100,
+    "status": "completed",
+    "missing_params": "",
+    "reply_text": ""
   },
   {
     "msg_id": "1920517657138829",
@@ -114,7 +146,11 @@
     "bank_name": "",
     "date": "",
     "discount_amount": 0,
-    "type": "customer_order"
+    "type": "customer_order",
+    "score": 90,
+    "status": "pending",
+    "missing_params": "فیش/رسید واریز",
+    "reply_text": "سفارش شما دریافت شد ✅\nبرای تکمیل ثبت فاکتور لطفاً ارسال کنید:\n- فیش/رسید واریز"
   },
   {
     "msg_id": "1920592696891829",
@@ -127,7 +163,11 @@
     "bank_name": "",
     "date": "",
     "discount_amount": 0,
-    "type": "customer_order"
+    "type": "customer_order",
+    "score": 90,
+    "status": "pending",
+    "missing_params": "فیش/رسید واریز",
+    "reply_text": "سفارش شما دریافت شد ✅\nبرای تکمیل ثبت فاکتور لطفاً ارسال کنید:\n- فیش/رسید واریز"
   },
   {
     "msg_id": "1920624710110829",
@@ -140,7 +180,11 @@
     "bank_name": "سپینو (بانک قرض الحسنه مهر ایران)",
     "date": "1405/07/04 13:43:44",
     "discount_amount": 0,
-    "type": "bank_receipt"
+    "type": "bank_receipt",
+    "score": 50,
+    "status": "pending",
+    "missing_params": "آدرس کامل ، اقلام و تعداد سفارش",
+    "reply_text": "سفارش شما دریافت شد ✅\nبرای تکمیل ثبت فاکتور لطفاً ارسال کنید:\n- آدرس کامل\n- اقلام و تعداد سفارش"
   },
   {
     "msg_id": "1921077937661829",
@@ -153,6 +197,10 @@
     "bank_name": "بانک کشاورزی (پایا)",
     "date": "1405/07/04",
     "discount_amount": 10000000,
-    "type": "bank_receipt"
+    "type": "bank_receipt",
+    "score": 30,
+    "status": "pending",
+    "missing_params": "آدرس کامل ، شماره تماس ، اقلام و تعداد سفارش",
+    "reply_text": "سفارش شما دریافت شد ✅\nبرای تکمیل ثبت فاکتور لطفاً ارسال کنید:\n- آدرس کامل\n- شماره تماس\n- اقلام و تعداد سفارش"
   }
 ]
