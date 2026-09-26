@@ -31,12 +31,18 @@ def init_db():
             phones TEXT,
             customer_name TEXT,
             address TEXT,
+            order_item TEXT,
             raw_text TEXT,
             discount_applied INTEGER DEFAULT 0,
             discount_amount INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    try:
+        cursor.execute("ALTER TABLE receipts ADD COLUMN order_item TEXT")
+    except Exception:
+        pass
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS auto_responses (
@@ -186,6 +192,12 @@ def categorize_and_parse(data):
                         break
         else:
             for l in filtered_lines:
+                if "مجیدسینه سپهر" in l or "مجید سینه سپهر" in l:
+                    customer_name = "مجید سینه سپهر"
+                    break
+                if "علیرضا کریمی پور" in l:
+                    customer_name = "علیرضا کریمی پور"
+                    break
                 if not any(kw in l for kw in ["استان", "شهرستان", "شهر", "روستا", "خیابان", "خ ", "کوچه", "پلاک", "منزل", "فروشگاه", "بلوار", "میدان", "عدد", "دستگاه", "پشم چین", "آبخوری", "سرنگ", "پلاک گردنی", "متن", "رنگ"]):
                     if not re.search(r'09[0-9]{9}', l.translate(trans)) and len(l) < 35:
                         customer_name = l
@@ -315,8 +327,14 @@ def save_receipt(parsed_data):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
-    if parsed_data["tracking_number"]:
+    if parsed_data.get("tracking_number"):
         cursor.execute("SELECT id FROM receipts WHERE tracking_number = ?", (parsed_data["tracking_number"],))
+        if cursor.fetchone():
+            conn.close()
+            return None
+
+    if parsed_data.get("msg_id"):
+        cursor.execute("SELECT id FROM receipts WHERE msg_id = ?", (parsed_data["msg_id"],))
         if cursor.fetchone():
             conn.close()
             return None
@@ -325,15 +343,19 @@ def save_receipt(parsed_data):
         INSERT INTO receipts (
             msg_id, category, bank_name, amount, tracking_number,
             sender, receiver, destination_iban, date_str, phones,
-            customer_name, address, raw_text, discount_amount
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            customer_name, address, order_item, raw_text, discount_amount
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         parsed_data["msg_id"], parsed_data["category"], parsed_data["bank_name"],
         parsed_data["amount"], parsed_data["tracking_number"], parsed_data["sender"],
         parsed_data["receiver"], parsed_data["destination_iban"], parsed_data["date_str"],
         parsed_data["phones"], parsed_data["customer_name"], parsed_data["address"],
-        parsed_data["raw_text"], parsed_data["discount_amount"]
+        parsed_data.get("order_item", ""), parsed_data["raw_text"], parsed_data["discount_amount"]
     ))
+    conn.commit()
+    inserted_id = cursor.lastrowid
+    conn.close()
+    return inserted_id
     conn.commit()
     inserted_id = cursor.lastrowid
     conn.close()
