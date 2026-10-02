@@ -5,13 +5,13 @@
 // @description  خزنده زنده و فقط‌گروه‌هدف روبیکا + ارسال به Broker + پاسخ خودکار
 // @match        https://web.rubika.ir/*
 // @grant        GM_xmlhttpRequest
-// @connect      localhost
+// @connect      *
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    const SERVER_BASE = "http://localhost:5050";
+    const SERVER_BASE = (typeof GM_getValue !== "undefined" && GM_getValue("SERVER_BASE")) || "http://10.0.2.2:5050";
     const API_RECEIPTS = SERVER_BASE + "/api/receipts";
     const API_RULES = SERVER_BASE + "/api/auto-responses";
     const API_CLAIM_REPLY = SERVER_BASE + "/api/auto-reply/claim";
